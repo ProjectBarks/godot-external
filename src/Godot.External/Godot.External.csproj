@@ -1,9 +1,36 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net9.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <SupportedOSPlatform>windows</SupportedOSPlatform>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- See LiveClr.csproj: enforced doc coverage is deferred until the API surface settles. -->
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <AnalysisLevel>latest</AnalysisLevel>
   </PropertyGroup>
+
+  <!--
+    NOT PACKABLE YET. Per docs/analysis.md §8.6/§8.9 this stays private until the ABI grid
+    (tools/godot-abi-grid) shows the calibrator solving layouts it has never seen. Shipping the
+    §4.6 offset table without that evidence would publish one validated cell of a large matrix
+    as if it were general.
+  -->
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <!--
+    The memory-access surface (IByteSource and the Values/ decoders) is deliberately internal: it
+    is a two-method seam that will be re-pointed at LiveClr's IMemoryReader (§8.8). Tests drive it
+    with synthetic byte arrays rather than the seam being widened into public API.
+  -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="Godot.External.Tests" />
+  </ItemGroup>
 
 </Project>

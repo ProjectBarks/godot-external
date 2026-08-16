@@ -1,0 +1,20 @@
+<Project Sdk="Godot.NET.Sdk/4.5.1">
+  <!--
+    build.ps1 rewrites BOTH the Sdk version above and TargetFramework below for
+    each grid cell (see $VersionMatrix in build.ps1). The committed values are
+    the 4.5.1 cell, because §8.9 says to make the harness work against 4.5.1
+    release first — that cell is already known good, so a failure there is a
+    harness bug rather than a calibrator bug.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <Nullable>disable</Nullable>
+    <RootNamespace>GodotAbiGrid</RootNamespace>
+    <AssemblyName>GodotAbiGrid</AssemblyName>
+    <!-- Keep the managed side trivially inspectable from outside the process. -->
+    <PublishTrimmed>false</PublishTrimmed>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <DebugType>portable</DebugType>
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,161 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://Probe.cs" id="1_probe"]
+
+; ---------------------------------------------------------------------------
+; godot-abi-grid — AUTHORED GROUND TRUTH (docs/analysis.md §8.9)
+;
+; Every number in this file is load-bearing. Read §8.9 before changing any of
+; them, then re-run `node gen-expected.mjs`.
+;
+;  * Sizes are NON-ROUND and mutually distinct. §12.5 probe 15 got four
+;    candidate offsets for a 200x50 control because round numbers recur
+;    throughout memory. 613x227 / 409x151 / 887x313 make a single scan
+;    near-unique and a two-control intersection certainly unique.
+;  * EXACTLY ONE size is duplicated on purpose (409x151 on AlphaLeaf and on
+;    GammaNest) to prove the calibrator does not collapse distinct nodes.
+;  * Nesting is 7 levels deep with sibling counts 2/3/4/3/2/3 — uneven, so the
+;    intrusive child-list walk and the parent pointer are both exercised.
+;  * ZetaLabelUnicode / ZetaRich carry non-ASCII text including an astral
+;    codepoint (U+1D11E). §4.6: scry truncates char32_t -> byte. The harness
+;    MUST fail if our decoder does the same.
+;  * VisibleTwin / HiddenTwin are the visible-flag pair.
+;  * AnchoredWide has non-zero anchors, so its position/size are computed from
+;    the parent rect rather than being the raw offsets — this is the shape that
+;    produced StS2's BgContainer offset[-960,-516,1600,684] in §4.6.
+;  * clip_text on the Labels stops Label::get_minimum_size() from overriding
+;    the authored size.
+; ---------------------------------------------------------------------------
+
+[node name="RootHarness" type="Control"]
+offset_right = 1920.0
+offset_bottom = 1080.0
+script = ExtResource("1_probe")
+
+[node name="AlphaPanel" type="Control" parent="."]
+offset_left = 37.0
+offset_top = 53.0
+offset_right = 650.0
+offset_bottom = 280.0
+scale = Vector2(1.25, 0.75)
+
+[node name="AlphaLeaf" type="ColorRect" parent="AlphaPanel"]
+offset_left = 11.0
+offset_top = 13.0
+offset_right = 420.0
+offset_bottom = 164.0
+color = Color(0.203922, 0.407843, 0.803922, 1)
+
+[node name="BetaBranch" type="Control" parent="AlphaPanel"]
+offset_left = 23.0
+offset_top = 29.0
+offset_right = 910.0
+offset_bottom = 342.0
+scale = Vector2(0.5, 2)
+
+[node name="GammaNest" type="Control" parent="AlphaPanel/BetaBranch"]
+offset_left = 7.0
+offset_top = 11.0
+offset_right = 416.0
+offset_bottom = 162.0
+
+[node name="DeltaCore" type="Control" parent="AlphaPanel/BetaBranch/GammaNest"]
+offset_left = 5.0
+offset_top = 3.0
+offset_right = 288.0
+offset_bottom = 100.0
+
+[node name="EpsilonCore" type="Control" parent="AlphaPanel/BetaBranch/GammaNest/DeltaCore"]
+offset_left = 2.0
+offset_top = 1.0
+offset_right = 153.0
+offset_bottom = 68.0
+
+[node name="ZetaLabelAscii" type="Label" parent="AlphaPanel/BetaBranch/GammaNest/DeltaCore/EpsilonCore"]
+offset_right = 331.0
+offset_bottom = 89.0
+text = "GridProbe ASCII 0123"
+clip_text = true
+
+[node name="ZetaLabelUnicode" type="Label" parent="AlphaPanel/BetaBranch/GammaNest/DeltaCore/EpsilonCore"]
+offset_top = 95.0
+offset_right = 347.0
+offset_bottom = 178.0
+text = "héllo ✦ 日本語"
+clip_text = true
+
+[node name="ZetaRich" type="RichTextLabel" parent="AlphaPanel/BetaBranch/GammaNest/DeltaCore/EpsilonCore"]
+offset_top = 185.0
+offset_right = 401.0
+offset_bottom = 281.0
+bbcode_enabled = false
+text = "ρich ✦ テキスト 𝄞 RTL"
+
+[node name="EpsilonSibling" type="Panel" parent="AlphaPanel/BetaBranch/GammaNest/DeltaCore"]
+offset_left = 160.0
+offset_top = 1.0
+offset_right = 245.0
+offset_bottom = 60.0
+
+[node name="DeltaSiblingOne" type="Control" parent="AlphaPanel/BetaBranch/GammaNest"]
+offset_left = 300.0
+offset_top = 5.0
+offset_right = 349.0
+offset_bottom = 44.0
+
+[node name="DeltaSiblingTwo" type="Control" parent="AlphaPanel/BetaBranch/GammaNest"]
+offset_left = 300.0
+offset_top = 50.0
+offset_right = 367.0
+offset_bottom = 113.0
+
+[node name="VisibleTwin" type="Panel" parent="AlphaPanel/BetaBranch"]
+offset_left = 30.0
+offset_top = 350.0
+offset_right = 301.0
+offset_bottom = 489.0
+visible = true
+
+[node name="HiddenTwin" type="Panel" parent="AlphaPanel/BetaBranch"]
+visible = false
+offset_left = 320.0
+offset_top = 350.0
+offset_right = 679.0
+offset_bottom = 531.0
+
+[node name="AnchoredWide" type="Control" parent="AlphaPanel/BetaBranch"]
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -431.0
+offset_top = -197.0
+offset_right = 182.0
+offset_bottom = -46.0
+
+[node name="AnchoredChild" type="ColorRect" parent="AlphaPanel/BetaBranch/AnchoredWide"]
+offset_left = 3.0
+offset_top = 7.0
+offset_right = 56.0
+offset_bottom = 48.0
+color = Color(0.803922, 0.203922, 0.407843, 1)
+
+[node name="AlphaSibling" type="Control" parent="AlphaPanel"]
+offset_left = 450.0
+offset_top = 5.0
+offset_right = 529.0
+offset_bottom = 72.0
+
+[node name="OmegaPanel" type="Control" parent="."]
+offset_left = 1000.0
+offset_top = 600.0
+offset_right = 1289.0
+offset_bottom = 761.0
+scale = Vector2(2.5, 1.75)
+
+[node name="OmegaChild" type="ColorRect" parent="OmegaPanel"]
+offset_left = 9.0
+offset_top = 9.0
+offset_right = 110.0
+offset_bottom = 72.0
+color = Color(0.407843, 0.803922, 0.203922, 1)

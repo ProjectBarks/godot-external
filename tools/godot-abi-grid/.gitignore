@@ -1,0 +1,16 @@
+# Grid outputs and local tooling. REPORT.md is committed; everything it was
+# generated from is not.
+out/
+results/
+build-staging/
+bin/
+godot-bin.json
+
+# Godot / .NET artefacts if someone opens project/ in the editor
+project/.godot/
+project/.mono/
+project/bin/
+project/obj/
+project/*.sln
+project/*.csproj.user
+project/export_presets.cfg.bak

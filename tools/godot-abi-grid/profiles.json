@@ -1,0 +1,90 @@
+{
+  "$schema": "godot-abi-grid/profiles.v1",
+  "note": [
+    "Shipped ABI profiles, transcribed from docs/analysis.md §4.6. calibrate.mjs uses these",
+    "ONLY as a cross-check (assertion (d)). The calibrator under test must never be given",
+    "them: a driver that reports `usedProfile: true` fails the run outright, because the",
+    "whole point of §8.9 is evidence that the calibrator solves layouts it has never seen.",
+    "",
+    "Provenance matters for reading a mismatch. The §4.6 numbers were recovered by",
+    "disassembling untapped-scry and then live-validated (30/30 in §12.3, 21/21 in §12.3b,",
+    "60/60 in §12.4c) against Slay the Spire 2 — which runs a MODIFIED 4.5.1 engine. A stock",
+    "4.5.1 export template is not the same binary. So a disagreement on the",
+    "4.5.1-release-single cell has two readings, and the harness prints both rather than",
+    "picking one: (a) the calibrator is wrong, or (b) the stock template's Control layout",
+    "differs from the StS2 fork's. Only (a) blocks publishing."
+  ],
+  "profiles": [
+    {
+      "id": "godot-4.5.x-release-single-x64",
+      "match": { "versionPrefix": "4.5", "template": "release", "precision": "single", "arch": "x86_64" },
+      "trust": "verified",
+      "verifiedAgainst": "modified 4.5.1 (Slay the Spire 2), §12.3 30/30 + §12.3b 21/21 + §12.4c 60/60",
+      "stockTemplateVerified": false,
+      "realTWidth": 4,
+      "offsets": {
+        "node.scriptInstance": "0x68",
+        "node.parent": "0x128",
+        "node.childListHead": "0x148",
+        "node.name": "0x1c0",
+        "canvasItem.visible": "0x370",
+        "control.globalPosition": "0x3f8",
+        "control.offset": "0x470",
+        "control.anchor": "0x480",
+        "control.scale": "0x4a8",
+        "control.position": "0x4b8",
+        "control.size": "0x4c0",
+        "label.text": "0x800",
+        "richTextLabel.text": "0xa78"
+      },
+      "walk": {
+        "childList.next": "0x0",
+        "childList.node": "0x18",
+        "scriptInstance.ownerBackref": "0x8",
+        "scriptInstance.gcHandle": "0x20"
+      },
+      "comment": [
+        "control.anchor is not read by scry; it is included because §4.6's cross-check against",
+        "upstream scene/gui/control.h places Data.anchor[4] immediately after Data.offset[4],",
+        "and a calibrator that mistakes anchor for offset would otherwise look correct on the",
+        "nodes whose anchors are all zero. Main.tscn's AnchoredWide exists to break that tie."
+      ]
+    },
+    {
+      "id": "godot-4.5.x-debug-single-x64",
+      "match": { "versionPrefix": "4.5", "template": "debug", "precision": "single", "arch": "x86_64" },
+      "trust": "unverified",
+      "verifiedAgainst": "none — read out of scry's disassembly, never executed",
+      "stockTemplateVerified": false,
+      "realTWidth": 4,
+      "offsets": {
+        "node.scriptInstance": "0x70",
+        "node.parent": "0x178",
+        "node.childListHead": "0x198",
+        "node.name": "0x210",
+        "canvasItem.visible": "0x3c0",
+        "control.globalPosition": "0x448",
+        "control.offset": "0x500",
+        "control.scale": "0x4f8",
+        "control.position": "0x508",
+        "control.size": "0x510",
+        "label.text": "0x848",
+        "richTextLabel.text": "0xb18"
+      },
+      "walk": {
+        "childList.next": "0x0",
+        "childList.node": "0x18",
+        "scriptInstance.ownerBackref": "0x8",
+        "scriptInstance.gcHandle": "0x20"
+      },
+      "knownDefects": [
+        "§4.6: scry's debug constants OVERLAP — getOffset reads 0x500..0x50c while getPosition",
+        "reads 0x508/0x50c. Both cannot be right. control.scale (0x4f8) also sits BELOW",
+        "control.offset (0x500), inverting the field order that the release column and",
+        "upstream control.h agree on. Treat any debug-cell disagreement as evidence against",
+        "THIS TABLE first, not against the calibrator. That is precisely why §8.9 wants the",
+        "debug column measured."
+      ]
+    }
+  ]
+}

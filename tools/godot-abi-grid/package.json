@@ -1,0 +1,16 @@
+{
+  "name": "godot-abi-grid",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Compat-matrix harness for Godot.External (docs/analysis.md 8.9). Not published.",
+  "type": "module",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "expected": "node gen-expected.mjs",
+    "expected:check": "node gen-expected.mjs --check",
+    "test": "node gen-expected.mjs --check && node selftest.mjs",
+    "list": "node calibrate.mjs --list",
+    "calibrate": "node calibrate.mjs",
+    "report": "node calibrate.mjs --report"
+  }
+}
