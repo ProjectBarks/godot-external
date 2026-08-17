@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore -c Release -warnaserror
+
+      - name: Test
+        run: dotnet test --no-build -c Release --verbosity normal
+
+      # The ABI grid is the publish gate (docs/analysis.md §8.9). It needs Godot
+      # export templates that CI does not have, so this only proves the harness
+      # itself is sound -- 12 injected faults, each caught by the right check.
+      - name: ABI grid self-test
+        working-directory: tools/godot-abi-grid
+        run: node selftest.mjs
