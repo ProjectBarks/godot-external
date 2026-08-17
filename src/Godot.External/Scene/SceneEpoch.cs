@@ -1,5 +1,6 @@
 using Godot.External.Abi;
 using Godot.External.Bridge;
+using Godot.External.Memory;
 using Godot.External.Objects;
 
 namespace Godot.External.Scene;
@@ -57,6 +58,7 @@ internal sealed class SceneEpoch : IDisposable
 
     private readonly IByteSource _source;
     private volatile bool _ended;
+    private MemorySnapshot? _snapshot;
 
     internal SceneEpoch(IByteSource source, GodotAbiProfile profile, INodeClassifier? classifier = null)
     {
@@ -76,7 +78,11 @@ internal sealed class SceneEpoch : IDisposable
         _source = source;
         Profile = profile;
         Classifier = classifier ?? PlausibilityNodeClassifier.Instance;
-        Bridge = new GodotObjectBridge(source, profile);
+
+        // Through the epoch, not the raw source: a bridge that captured `source` here would keep
+        // reading the live target after a snapshot was opened, and so could resolve a managed object
+        // from a moment the rest of the traversal never saw.
+        Bridge = new GodotObjectBridge(new EpochByteSource(this), profile);
         Id = Interlocked.Increment(ref _nextId);
     }
 
@@ -120,14 +126,84 @@ internal sealed class SceneEpoch : IDisposable
     /// <summary>Pointer width of the target process, in bytes. Fixed at 8; see <see cref="Begin"/>.</summary>
     public int PointerSize => ByteSourceExtensions.PointerWidth;
 
-    /// <summary>Memory access, gated on the epoch still being current.</summary>
+    /// <summary>
+    /// Memory access, gated on the epoch still being current. Returns the open
+    /// <see cref="MemorySnapshot"/> when there is one and the raw source otherwise.
+    /// </summary>
     /// <exception cref="SceneEpochExpiredException">The epoch has ended.</exception>
     internal IByteSource Source
     {
         get
         {
             EnsureCurrent();
-            return _source;
+            return _snapshot ?? _source;
+        }
+    }
+
+    /// <summary>
+    /// The snapshot currently freezing this epoch's reads, or <see langword="null"/> when reads go
+    /// straight to the target — which is the default and the behaviour of every API that does not
+    /// open one.
+    /// </summary>
+    internal MemorySnapshot? CurrentSnapshot => _snapshot;
+
+    /// <summary>
+    /// Opens a coherent, scoped cache over this epoch's reads. <b>Caching is opt-in; an epoch with
+    /// no snapshot behaves exactly as it did before this existed.</b>
+    /// </summary>
+    /// <param name="options">
+    /// Cache shape and limits. The default is <see cref="MemoryCacheMode.Page"/> with 512-byte
+    /// blocks, which is what measured best across a tree walk, a targeted geometry read and a 4 Hz
+    /// subtree poll on a real game — see <c>bench/README.md</c>.
+    /// </param>
+    /// <returns>
+    /// A snapshot that must be disposed. Until it is, every read this epoch performs is served from
+    /// one frozen image of the target.
+    /// </returns>
+    /// <exception cref="InvalidOperationException">
+    /// A snapshot is already open. Deliberate: the common way to misuse a cache is to keep one alive
+    /// across polls, and refusing the second open turns that into a loud failure on the next poll
+    /// instead of a silent one now. See <see cref="MemorySnapshot"/>.
+    /// </exception>
+    /// <exception cref="SceneEpochExpiredException">The epoch has ended.</exception>
+    internal MemorySnapshot Snapshot(MemoryCacheOptions? options = null)
+    {
+        EnsureCurrent();
+
+        if (_snapshot is not null)
+        {
+            throw new InvalidOperationException(
+                $"SceneEpoch #{Id} already has snapshot #{_snapshot.Sequence} open ({_snapshot.Age.TotalMilliseconds:F0} ms). "
+              + "Dispose it before opening another: a cache held across polls serves the first poll's "
+              + "bytes forever (docs/analysis.md §6.4).");
+        }
+
+        MemorySnapshot snapshot = null!;
+        snapshot = new MemorySnapshot(
+            _source,
+            Profile,
+            options ?? new MemoryCacheOptions(),
+            () =>
+            {
+                if (ReferenceEquals(_snapshot, snapshot))
+                {
+                    _snapshot = null;
+                }
+            });
+
+        _snapshot = snapshot;
+        return snapshot;
+    }
+
+    /// <summary>
+    /// Tells an open span-granular snapshot that <paramref name="address"/> is a node base, so the
+    /// whole struct can be fetched on first touch. Free and silent when no snapshot is open.
+    /// </summary>
+    internal void RegisterObject(ulong address)
+    {
+        if (!_ended)
+        {
+            _snapshot?.RegisterObject(address);
         }
     }
 
@@ -144,7 +220,16 @@ internal sealed class SceneEpoch : IDisposable
     /// <summary>
     /// Ends the epoch, invalidating every handle taken from it. Idempotent.
     /// </summary>
-    public void End() => _ended = true;
+    /// <remarks>
+    /// Also ends any open <see cref="MemorySnapshot"/>. A snapshot outliving its epoch would be a
+    /// cache of addresses that are no longer meaningful — the §8.8 hazard this whole type exists for.
+    /// </remarks>
+    public void End()
+    {
+        _ended = true;
+        _snapshot?.Dispose();
+        _snapshot = null;
+    }
 
     /// <inheritdoc/>
     public void Dispose() => End();
@@ -204,5 +289,20 @@ internal sealed class SceneEpoch : IDisposable
     public bool IsControl(NativePtr address) => Classify(address) == GodotNodeClass.Control;
 
     /// <inheritdoc/>
-    public override string ToString() => $"SceneEpoch #{Id} ({(HasEnded ? "ended" : "current")}, {Profile})";
+    public override string ToString()
+    {
+        string snapshot = _snapshot is null ? "uncached" : $"snapshot #{_snapshot.Sequence} {_snapshot.Options.Mode}";
+        return $"SceneEpoch #{Id} ({(HasEnded ? "ended" : "current")}, {Profile}, {snapshot})";
+    }
+
+    /// <summary>
+    /// Forwards to whatever the epoch is currently reading through, so a component that captures a
+    /// source at construction still observes a snapshot opened later.
+    /// </summary>
+    private sealed class EpochByteSource(SceneEpoch epoch) : IByteSource
+    {
+        public bool Is64Bit => epoch._source.Is64Bit;
+
+        public bool TryRead(ulong address, Span<byte> buffer) => epoch.Source.TryRead(address, buffer);
+    }
 }

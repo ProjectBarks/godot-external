@@ -35,6 +35,12 @@ internal class GodotNode : IEquatable<GodotNode>
         ArgumentNullException.ThrowIfNull(epoch);
         Epoch = epoch;
         Address = address;
+
+        // The one place in the library where a Node* is definitely a node. A span-granular snapshot
+        // needs object extents and cannot infer them from a field address; this hands them over for
+        // free. It records an address and reads nothing, so a handle that is never read costs
+        // nothing, and with no snapshot open it is a null check.
+        epoch.RegisterObject(address.Address);
     }
 
     /// <summary>The epoch this handle belongs to, and outside which it is invalid.</summary>

@@ -46,7 +46,9 @@ public static class GodotAbiProfiles
         Template = GodotBuildTemplate.Release,
         Precision = GodotPrecision.Single,
         Confidence = AbiConfidence.LiveValidated,
-        Notes = "StS2 build [v0.107.1] (2026.06.18); 30/30 §12.3, 21/21 §12.3b, 60/60 §12.4c.",
+        Notes = "StS2 build [v0.107.1] (2026.06.18); 30/30 §12.3, 21/21 §12.3b, 60/60 §12.4c. "
+              + "LabelText corrected 0x800 -> 0x7f8 from the ABI grid (2026-08-17): 0x800 is xl_text, the "
+              + "translated copy Label stores immediately after text, and the two share one allocation.",
         Offsets = new GodotOffsetTable
         {
             CanvasItemVisible = 0x370,
@@ -59,52 +61,50 @@ public static class GodotAbiProfiles
             NodeChildListHead = 0x148,
             NodeName = 0x1c0,
             NodeScriptInstance = 0x68, // ScriptInstance*, NOT the managed object
-            LabelText = 0x800,
+            LabelText = 0x7f8,
             RichTextLabelText = 0xa78,
         },
     };
 
     /// <summary>
-    /// <b>Godot 4.5.1, debug export template — UNVALIDATED, and known to be internally inconsistent.</b>
+    /// <b>Godot 4.5.1, debug export template, single precision — grid-measured.</b>
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Recorded from the debug branch of scry's accessors so the calibrator has a starting guess,
-    /// and so the §8.9 grid has something to diff against. It has never been checked against a
-    /// running debug-template build.
+    /// Replaces the §4.6 debug column, which was transcribed from scry's debug branch, was never
+    /// live-validated, and was internally inconsistent — it had <c>getOffset</c> spanning
+    /// <c>0x500..0x50c</c> while <c>getPosition</c> read <c>0x508</c>, which cannot both be true. The
+    /// ABI grid derived this column instead, from stock 4.5 debug export templates, and got the same
+    /// values on three passes over unchanged binaries with no contradictions.
     /// </para>
     /// <para>
-    /// <b>The numbers cannot all be right.</b> §4.6 confirmed in the disassembly that
-    /// <c>getOffset</c> reads <c>0x500..0x50c</c> while <c>getPosition</c> reads
-    /// <c>0x508</c>/<c>0x50c</c> — a genuine overlap in scry's own debug constants, not a misreading.
-    /// <c>offset[2]</c>/<c>offset[3]</c> and <c>pos_cache</c> cannot both live at those addresses.
-    /// The debug path is presumably untested upstream. Treat this profile as a hint only, and
-    /// prefer calibration (§12.5) for any debug-template target.
+    /// The measured relationship is simply <b>debug = release + 8</b>, uniformly across every field.
+    /// The old column's ~0x48–0x50 deltas were not a different layout; they were wrong.
     /// </para>
     /// </remarks>
-    public static GodotAbiProfile Godot451DebugUnvalidated { get; } = new()
+    public static GodotAbiProfile Godot451Debug { get; } = new()
     {
         EngineVersion = "4.5.1",
         Template = GodotBuildTemplate.Debug,
         Precision = GodotPrecision.Single,
-        Confidence = AbiConfidence.Unvalidated,
-        Notes = "Debug column from §4.6. NEVER live-validated, and self-inconsistent: "
-              + "ControlOffsets spans 0x500..0x50c which overlaps ControlPosition at 0x508. "
-              + "Calibrate before use.",
+        Confidence = AbiConfidence.Calibrated,
+        Notes = "Derived by the ABI grid from stock 4.5 debug export templates (2026-08-17), three passes, "
+              + "no contradictions. Supersedes the §4.6 debug column, which was unvalidated and "
+              + "self-inconsistent. Uniformly release + 8.",
         Offsets = new GodotOffsetTable
         {
-            CanvasItemVisible = 0x3c0,
-            ControlGlobalPosition = 0x448,
-            ControlOffsets = 0x500,
-            ControlScale = 0x4f8,
-            ControlPosition = 0x508,
-            ControlSize = 0x510,
-            NodeParent = 0x178,
-            NodeChildListHead = 0x198,
-            NodeName = 0x210,
+            CanvasItemVisible = 0x378,
+            ControlGlobalPosition = 0x400,
+            ControlOffsets = 0x478,
+            ControlScale = 0x4b0,
+            ControlPosition = 0x4c0,
+            ControlSize = 0x4c8,
+            NodeParent = 0x130,
+            NodeChildListHead = 0x150,
+            NodeName = 0x1c8,
             NodeScriptInstance = 0x70,
-            LabelText = 0x848,
-            RichTextLabelText = 0xb18,
+            LabelText = 0x800,
+            RichTextLabelText = 0xa80,
         },
     };
 
@@ -112,7 +112,7 @@ public static class GodotAbiProfiles
     public static IReadOnlyList<GodotAbiProfile> All { get; } =
     [
         Godot451Release,
-        Godot451DebugUnvalidated,
+        Godot451Debug,
     ];
 
     /// <summary>

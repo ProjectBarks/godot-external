@@ -20,7 +20,7 @@ public class GodotAbiProfileTests
     [InlineData(GodotField.NodeChildListHead, 0x148)]
     [InlineData(GodotField.NodeName, 0x1c0)]
     [InlineData(GodotField.NodeScriptInstance, 0x68)]
-    [InlineData(GodotField.LabelText, 0x800)]
+    [InlineData(GodotField.LabelText, 0x7f8)]
     [InlineData(GodotField.RichTextLabelText, 0xa78)]
     public void ReleaseProfile_HasTheLiveValidatedOffsets(GodotField field, int expected)
     {
@@ -28,21 +28,21 @@ public class GodotAbiProfileTests
     }
 
     [Theory]
-    [InlineData(GodotField.CanvasItemVisible, 0x3c0)]
-    [InlineData(GodotField.ControlGlobalPosition, 0x448)]
-    [InlineData(GodotField.ControlOffsets, 0x500)]
-    [InlineData(GodotField.ControlScale, 0x4f8)]
-    [InlineData(GodotField.ControlPosition, 0x508)]
-    [InlineData(GodotField.ControlSize, 0x510)]
-    [InlineData(GodotField.NodeParent, 0x178)]
-    [InlineData(GodotField.NodeChildListHead, 0x198)]
-    [InlineData(GodotField.NodeName, 0x210)]
+    [InlineData(GodotField.CanvasItemVisible, 0x378)]
+    [InlineData(GodotField.ControlGlobalPosition, 0x400)]
+    [InlineData(GodotField.ControlOffsets, 0x478)]
+    [InlineData(GodotField.ControlScale, 0x4b0)]
+    [InlineData(GodotField.ControlPosition, 0x4c0)]
+    [InlineData(GodotField.ControlSize, 0x4c8)]
+    [InlineData(GodotField.NodeParent, 0x130)]
+    [InlineData(GodotField.NodeChildListHead, 0x150)]
+    [InlineData(GodotField.NodeName, 0x1c8)]
     [InlineData(GodotField.NodeScriptInstance, 0x70)]
-    [InlineData(GodotField.LabelText, 0x848)]
-    [InlineData(GodotField.RichTextLabelText, 0xb18)]
-    public void DebugProfile_HasTheRecordedOffsets(GodotField field, int expected)
+    [InlineData(GodotField.LabelText, 0x800)]
+    [InlineData(GodotField.RichTextLabelText, 0xa80)]
+    public void DebugProfile_HasTheMeasuredOffsets(GodotField field, int expected)
     {
-        Assert.Equal(expected, GodotAbiProfiles.Godot451DebugUnvalidated.Offsets[field]);
+        Assert.Equal(expected, GodotAbiProfiles.Godot451Debug.Offsets[field]);
     }
 
     [Fact]
@@ -65,7 +65,7 @@ public class GodotAbiProfileTests
     public void OnlyTheReleaseProfileClaimsValidation()
     {
         Assert.Equal(AbiConfidence.LiveValidated, GodotAbiProfiles.Godot451Release.Confidence);
-        Assert.Equal(AbiConfidence.Unvalidated, GodotAbiProfiles.Godot451DebugUnvalidated.Confidence);
+        Assert.Equal(AbiConfidence.Calibrated, GodotAbiProfiles.Godot451Debug.Confidence);
     }
 
     [Fact]
@@ -82,17 +82,38 @@ public class GodotAbiProfileTests
     }
 
     [Fact]
-    public void DebugControlOffsets_OverlapAsDocumented()
+    public void DebugColumn_IsReleasePlusEightUniformly()
     {
-        // Not an aspiration — a regression guard on a KNOWN DEFECT. §4.6 confirmed in the
-        // disassembly that scry's debug getOffset reads 0x500..0x50c while getPosition reads
-        // 0x508/0x50c. If this assertion ever fails, someone "fixed" the table by guessing.
-        GodotAbiProfile profile = GodotAbiProfiles.Godot451DebugUnvalidated;
+        // Was a regression guard on a KNOWN DEFECT: §4.6's debug column had getOffset spanning
+        // 0x500..0x50c while getPosition read 0x508, which cannot both be true, and the test asserted
+        // the overlap so nobody would "fix" the table by guessing. The ABI grid has since derived the
+        // column from stock debug templates — three passes, unchanged binaries, no contradictions —
+        // and the real relationship is a uniform +8. The guard now protects the measurement instead
+        // of the defect.
+        GodotOffsetTable release = GodotAbiProfiles.Godot451Release.Offsets;
+        GodotOffsetTable debug = GodotAbiProfiles.Godot451Debug.Offsets;
+
+        foreach (GodotField field in new[]
+        {
+            GodotField.CanvasItemVisible, GodotField.ControlGlobalPosition, GodotField.ControlOffsets,
+            GodotField.ControlScale, GodotField.ControlPosition, GodotField.ControlSize,
+            GodotField.NodeParent, GodotField.NodeChildListHead, GodotField.NodeName,
+            GodotField.NodeScriptInstance, GodotField.LabelText, GodotField.RichTextLabelText,
+        })
+        {
+            Assert.Equal(release[field] + 8, debug[field]);
+        }
+    }
+
+    [Fact]
+    public void DebugControlOffsets_AreAscendingAndNonOverlapping()
+    {
+        GodotAbiProfile profile = GodotAbiProfiles.Godot451Debug;
         GodotOffsetTable offsets = profile.Offsets;
 
-        int offsetsEnd = offsets.ControlOffsets + (4 * profile.RealSize);
-        Assert.True(offsetsEnd > offsets.ControlPosition);
-        Assert.Equal(AbiConfidence.Unvalidated, profile.Confidence);
+        Assert.True(offsets.ControlOffsets + (4 * profile.RealSize) <= offsets.ControlScale);
+        Assert.True(offsets.ControlScale + (2 * profile.RealSize) <= offsets.ControlPosition);
+        Assert.True(offsets.ControlPosition + (2 * profile.RealSize) <= offsets.ControlSize);
     }
 
     [Theory]
@@ -178,13 +199,21 @@ public class GodotAbiProfileTests
     }
 
     [Fact]
-    public void CalibratingOneFieldOfTheDefectiveDebugTable_DoesNotLaunderIt()
+    public void CalibratingOneFieldOfAnUnvalidatedTable_DoesNotLaunderIt()
     {
-        // The failure this guards: one derived offset stamping the whole known-inconsistent debug
-        // column as top-confidence, so `Confidence >= LiveValidated` accepts seventeen unproven
-        // numbers.
-        GodotAbiProfile calibrated = GodotAbiProfiles.Godot451DebugUnvalidated
-            .WithCalibratedOffset(GodotField.ControlSize, 0x4c0);
+        // The failure this guards: one derived offset stamping a whole unproven column as
+        // top-confidence, so `Confidence >= LiveValidated` accepts seventeen numbers nobody measured.
+        //
+        // It used to use the shipped debug profile as its unvalidated base. That profile is now
+        // grid-measured and claims Calibrated, so the base is built here instead — the RULE is what
+        // this test is about, and it must not quietly stop testing it because a table improved.
+        GodotAbiProfile unproven = GodotAbiProfiles.Godot451Debug with
+        {
+            Confidence = AbiConfidence.Unvalidated,
+            Notes = "hypothetical unvalidated column",
+        };
+
+        GodotAbiProfile calibrated = unproven.WithCalibratedOffset(GodotField.ControlSize, 0x4c0);
 
         Assert.Equal(AbiConfidence.Unvalidated, calibrated.Confidence);
         Assert.True(calibrated.Confidence < AbiConfidence.LiveValidated);
@@ -207,7 +236,7 @@ public class GodotAbiProfileTests
     {
         GodotOffsetTable derived = GodotAbiProfiles.Godot451Release.Offsets with { NodeParent = 0x130 };
 
-        GodotAbiProfile fromDebugBase = GodotAbiProfiles.Godot451DebugUnvalidated.WithCalibratedOffsets(derived);
+        GodotAbiProfile fromDebugBase = GodotAbiProfiles.Godot451Debug.WithCalibratedOffsets(derived);
         GodotAbiProfile fromReleaseBase = GodotAbiProfiles.Godot451Release.WithCalibratedOffsets(derived);
 
         // None of the base table's numbers survive, so the result is neither promoted by nor

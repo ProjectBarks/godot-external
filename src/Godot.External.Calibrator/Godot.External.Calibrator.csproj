@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <RootNamespace>Godot.External.Calibrator</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <!--
+    tools/godot-abi-grid/README.md > "Driver contract": calibrate.mjs auto-discovers this project
+    by path and runs it with `dotnet run` against this project. The name and location are part of
+    the contract; do not move them.
+
+    LiveClr lives here and nowhere else. docs/analysis.md §8.8 keeps Godot.External itself free of
+    any dependency richer than IByteSource's two members; the process attach, the cDAC/managed
+    object model and the StructuralProbe candidate machinery are all calibration-time concerns.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\Godot.External\Godot.External.csproj" />
+    <ProjectReference Include="..\..\..\LiveClr\src\LiveClr\LiveClr.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Godot.External.Tests" />
+  </ItemGroup>
+
+</Project>

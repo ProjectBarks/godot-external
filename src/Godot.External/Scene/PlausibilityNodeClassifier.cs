@@ -1,5 +1,6 @@
 using Godot.External.Abi;
 using Godot.External.Bridge;
+using Godot.External.Memory;
 using Godot.External.Values;
 
 namespace Godot.External.Scene;
@@ -50,6 +51,10 @@ internal sealed class PlausibilityNodeClassifier : INodeClassifier
 
         IByteSource source = epoch.Source;
         GodotAbiProfile profile = epoch.Profile;
+
+        // Three Vector2 reads at 0x4a8, 0x4b8 and 0x4c0 are about to happen on one object. A
+        // span-granular snapshot serves all three from a single fetch once it knows the extent.
+        source.RegisterObject(node.Address);
 
         if (!ControlGeometry.TryReadVector2(source, profile, node.Address, GodotField.ControlSize, out GodotVector2 size)
             || !ControlGeometry.TryReadVector2(source, profile, node.Address, GodotField.ControlPosition, out GodotVector2 position)

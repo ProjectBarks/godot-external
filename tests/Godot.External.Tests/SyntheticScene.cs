@@ -27,8 +27,15 @@ internal sealed class SyntheticScene
     private ulong _nextNode = 0x0010_0000;
     private ulong _nextAux = 0x4000_0000;
 
+    /// <param name="densePages">
+    /// Map whole 4 KiB pages rather than individual bytes. Required by anything that installs a
+    /// <c>MemorySnapshot</c>: a page- or span-granular fetch reads across the padding between the
+    /// fields written here, which a byte-sparse image refuses.
+    /// </param>
+    public SyntheticScene(bool densePages = false) => Source = new FakeByteSource { DensePages = densePages };
+
     /// <summary>Backing memory.</summary>
-    public FakeByteSource Source { get; } = new();
+    public FakeByteSource Source { get; }
 
     /// <summary>The live-validated release profile (§12.3, §12.3b, §12.4c).</summary>
     public GodotAbiProfile Profile { get; } = GodotAbiProfiles.Godot451Release;

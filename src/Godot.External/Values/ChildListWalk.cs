@@ -1,4 +1,5 @@
 using Godot.External.Abi;
+using Godot.External.Memory;
 
 namespace Godot.External.Values;
 
@@ -156,6 +157,17 @@ internal static class ChildListWalk
         ChildWalkResult previous = Walk(source, offsets, nodeAddress, maxChildren);
         if (!previous.IsComplete)
         {
+            return previous;
+        }
+
+        // §6.4, learned twice in this project: inside a coherent snapshot the repeat traversal reads
+        // the SAME frozen bytes, so it cannot disagree, and running it manufactures confidence out of
+        // nothing while doubling the work. Freezing the image is the STRONGER mitigation — it closes
+        // the mid-splice window instead of detecting it afterwards — so the weaker one steps aside
+        // rather than being silently cancelled by it. The counter makes the substitution visible.
+        if (source.IsCoherent())
+        {
+            source.NoteAgreeTwiceSuppressed();
             return previous;
         }
 

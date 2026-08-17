@@ -1,4 +1,5 @@
 using Godot.External.Abi;
+using Godot.External.Memory;
 
 namespace Godot.External.Values;
 
@@ -211,6 +212,11 @@ internal static class ControlGeometry
             {
                 return false;
             }
+
+            // Ancestors arrive here as raw addresses rather than as handles, so a span-granular
+            // snapshot has not been told they are objects. Say so: this loop reads pos_cache and then
+            // parent on each one, which is exactly the pattern a span serves in a single fetch.
+            source.RegisterObject(current);
 
             if (!TryReadVector2(source, profile, current, GodotField.ControlPosition, out GodotVector2 local))
             {

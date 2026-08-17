@@ -20,6 +20,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Godot.External\Godot.External.csproj" />
+    <ProjectReference Include="..\..\src\Godot.External.Calibrator\Godot.External.Calibrator.csproj" />
   </ItemGroup>
 
 </Project>

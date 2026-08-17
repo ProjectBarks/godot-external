@@ -9,6 +9,12 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Godot.External", "src\Godot
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Godot.External.Tests", "tests\Godot.External.Tests\Godot.External.Tests.csproj", "{8473B92B-CD0F-42BE-AB7A-5D25F34BF09B}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Godot.External.Calibrator", "src\Godot.External.Calibrator\Godot.External.Calibrator.csproj", "{8103C97D-937D-41BD-8194-F8B04F5EAC88}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "bench", "bench", "{760AB15A-8938-8D9B-BEDE-5CE1484B84C3}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Godot.External.Bench", "bench\Godot.External.Bench\Godot.External.Bench.csproj", "{B30A5542-5E78-4C9D-B0D6-3ED1C98B1971}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -43,6 +49,30 @@ Global
 		{8473B92B-CD0F-42BE-AB7A-5D25F34BF09B}.Release|x64.Build.0 = Release|Any CPU
 		{8473B92B-CD0F-42BE-AB7A-5D25F34BF09B}.Release|x86.ActiveCfg = Release|Any CPU
 		{8473B92B-CD0F-42BE-AB7A-5D25F34BF09B}.Release|x86.Build.0 = Release|Any CPU
+		{8103C97D-937D-41BD-8194-F8B04F5EAC88}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8103C97D-937D-41BD-8194-F8B04F5EAC88}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8103C97D-937D-41BD-8194-F8B04F5EAC88}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{8103C97D-937D-41BD-8194-F8B04F5EAC88}.Debug|x64.Build.0 = Debug|Any CPU
+		{8103C97D-937D-41BD-8194-F8B04F5EAC88}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{8103C97D-937D-41BD-8194-F8B04F5EAC88}.Debug|x86.Build.0 = Debug|Any CPU
+		{8103C97D-937D-41BD-8194-F8B04F5EAC88}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8103C97D-937D-41BD-8194-F8B04F5EAC88}.Release|Any CPU.Build.0 = Release|Any CPU
+		{8103C97D-937D-41BD-8194-F8B04F5EAC88}.Release|x64.ActiveCfg = Release|Any CPU
+		{8103C97D-937D-41BD-8194-F8B04F5EAC88}.Release|x64.Build.0 = Release|Any CPU
+		{8103C97D-937D-41BD-8194-F8B04F5EAC88}.Release|x86.ActiveCfg = Release|Any CPU
+		{8103C97D-937D-41BD-8194-F8B04F5EAC88}.Release|x86.Build.0 = Release|Any CPU
+		{B30A5542-5E78-4C9D-B0D6-3ED1C98B1971}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B30A5542-5E78-4C9D-B0D6-3ED1C98B1971}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B30A5542-5E78-4C9D-B0D6-3ED1C98B1971}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{B30A5542-5E78-4C9D-B0D6-3ED1C98B1971}.Debug|x64.Build.0 = Debug|Any CPU
+		{B30A5542-5E78-4C9D-B0D6-3ED1C98B1971}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{B30A5542-5E78-4C9D-B0D6-3ED1C98B1971}.Debug|x86.Build.0 = Debug|Any CPU
+		{B30A5542-5E78-4C9D-B0D6-3ED1C98B1971}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B30A5542-5E78-4C9D-B0D6-3ED1C98B1971}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B30A5542-5E78-4C9D-B0D6-3ED1C98B1971}.Release|x64.ActiveCfg = Release|Any CPU
+		{B30A5542-5E78-4C9D-B0D6-3ED1C98B1971}.Release|x64.Build.0 = Release|Any CPU
+		{B30A5542-5E78-4C9D-B0D6-3ED1C98B1971}.Release|x86.ActiveCfg = Release|Any CPU
+		{B30A5542-5E78-4C9D-B0D6-3ED1C98B1971}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -50,5 +80,7 @@ Global
 	GlobalSection(NestedProjects) = preSolution
 		{A41D7D7C-B39E-40B2-9E6C-A254F9A88542} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{8473B92B-CD0F-42BE-AB7A-5D25F34BF09B} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
+		{8103C97D-937D-41BD-8194-F8B04F5EAC88} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
+		{B30A5542-5E78-4C9D-B0D6-3ED1C98B1971} = {760AB15A-8938-8D9B-BEDE-5CE1484B84C3}
 	EndGlobalSection
 EndGlobal

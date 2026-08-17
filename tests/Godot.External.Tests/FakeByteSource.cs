@@ -15,9 +15,24 @@ namespace Godot.External.Tests;
 /// </remarks>
 internal sealed class FakeByteSource : IByteSource
 {
+    /// <summary>Page size used by <see cref="DensePages"/>. The x64 page, and the caches' block unit.</summary>
+    public const int PageSize = 4096;
+
     private readonly Dictionary<ulong, byte> _bytes = [];
+    private readonly HashSet<ulong> _densePages = [];
 
     public bool Is64Bit { get; init; } = true;
+
+    /// <summary>
+    /// Makes a write map the whole 4 KiB pages it touches, filling the gaps with zeroes.
+    /// </summary>
+    /// <remarks>
+    /// Off by default, because per-byte sparseness is what the decoder tests want: an unmapped
+    /// address must fail the read. It has to be available, though, because no real target is sparse
+    /// at byte granularity — a page-granular cache fetching 4 KiB across a node's padding would fail
+    /// every read here and the cached variants would never actually run.
+    /// </remarks>
+    public bool DensePages { get; init; }
 
     /// <summary>Number of <see cref="TryRead"/> calls so far.</summary>
     public int ReadCount { get; private set; }
@@ -45,9 +60,36 @@ internal sealed class FakeByteSource : IByteSource
 
     public FakeByteSource WriteBytes(ulong address, ReadOnlySpan<byte> data)
     {
+        if (DensePages && data.Length > 0)
+        {
+            ulong first = address & ~(ulong)(PageSize - 1);
+            ulong last = (address + (ulong)(data.Length - 1)) & ~(ulong)(PageSize - 1);
+            for (ulong page = first; page <= last; page += PageSize)
+            {
+                MapPage(page);
+            }
+        }
+
         for (int i = 0; i < data.Length; i++)
         {
             _bytes[address + (ulong)i] = data[i];
+        }
+
+        return this;
+    }
+
+    /// <summary>Maps a whole 4 KiB page of zeroes, if it is not already mapped.</summary>
+    public FakeByteSource MapPage(ulong address)
+    {
+        ulong page = address & ~(ulong)(PageSize - 1);
+        if (!_densePages.Add(page))
+        {
+            return this;
+        }
+
+        for (int i = 0; i < PageSize; i++)
+        {
+            _bytes.TryAdd(page + (ulong)i, 0);
         }
 
         return this;
@@ -126,7 +168,12 @@ internal sealed class FakeByteSource : IByteSource
     {
         for (int i = 0; i < length; i++)
         {
-            _bytes.Remove(address + (ulong)i);
+            ulong cursor = address + (ulong)i;
+            _bytes.Remove(cursor);
+
+            // Forget that the page was filled, so a later write re-fills the hole rather than
+            // leaving an unmapped byte in the middle of a nominally mapped page.
+            _densePages.Remove(cursor & ~(ulong)(PageSize - 1));
         }
 
         return this;

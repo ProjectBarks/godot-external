@@ -64,7 +64,7 @@ public class GodotStringNameTests
     public void DebugProfileOffsets_ResolveTheSameStructure()
     {
         // The mechanism does not change between templates — only the offsets do (§4.6).
-        GodotAbiProfile debug = GodotAbiProfiles.Godot451DebugUnvalidated;
+        GodotAbiProfile debug = GodotAbiProfiles.Godot451Debug;
         FakeByteSource source = BuildNode("Proxy", debug);
 
         Assert.True(GodotStringName.TryReadNodeName(source, debug, Node, out string name));

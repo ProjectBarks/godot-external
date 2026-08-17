@@ -25,6 +25,12 @@ public sealed record GodotOffsetTable
     /// Base of Control's cached global position (x at this offset, y one <c>real_t</c> later).
     /// </summary>
     /// <remarks>
+    /// <b>No calibrator is asked to derive this, and none does.</b> It is kept because the §4.6
+    /// disassembly recorded it, not because anything reads it — see the warning below on why it must
+    /// not be read. A cross-check against this entry therefore compares nothing; that is deliberate
+    /// rather than an omission, and it is stated here so the entry does not read as measured.
+    /// </remarks>
+    /// <remarks>
     /// <para>
     /// <b>DO NOT TRUST THIS FIELD.</b> It is a <em>cached field, not a computed transform</em>.
     /// §4.6 settles it from the disassembly: <c>getGlobalPosition</c> (<c>FUN_180012c70</c>)
@@ -130,8 +136,38 @@ public sealed record GodotOffsetTable
     /// </remarks>
     public int CowDataSizeBackOffset { get; init; } = ByteSourceExtensions.PointerWidth;
 
-    /// <summary><c>ScriptInstance</c> back-reference to the owning <c>Node*</c> (§4.6: <c>+0x08</c>).</summary>
+    /// <summary>
+    /// <c>ScriptInstance</c> back-reference to the owning <c>Node*</c> for a <b>.NET</b> script
+    /// instance (§4.6: <c>+0x08</c>).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This one is keyed by the <b>implementing class</b>, not by the build: <c>CSharpInstance</c>
+    /// and <c>GDScriptInstance</c> are unrelated C++ classes implementing one interface, so the
+    /// owner pointer need not sit at the same place in both — see
+    /// <see cref="ScriptInstanceOwnerGdScript"/>. The ABI grid measured <c>0x08</c> wherever the
+    /// instance was a C# one and <c>0x10</c> wherever it was a GDScript one, across three passes
+    /// with no contradiction (2026-08-17).
+    /// </para>
+    /// <para>
+    /// It is <em>not</em> a per-binding fact, tempting as that reading is from the grid's cell names.
+    /// A mono export template runs <c>.gd</c> scripts perfectly well, so one process can hold nodes
+    /// of both kinds at once and the correct value differs <b>per node</b>. Choose it by reading the
+    /// ScriptInstance's own class — its vtable names it — rather than by asking what the build is.
+    /// </para>
+    /// </remarks>
     public int ScriptInstanceOwner { get; init; } = 0x08;
+
+    /// <summary>
+    /// <c>ScriptInstance</c> back-reference to the owning <c>Node*</c> for a <b>GDScript</b>
+    /// instance. Grid-measured <c>0x10</c>.
+    /// </summary>
+    /// <remarks>
+    /// A genuine gap in the §4.6 table rather than a calibration defect: scry only ever read a .NET
+    /// target, so the GDScript value had never been observed. A calibrator that derived <c>0x10</c>
+    /// on a GDScript cell was disagreeing with a table that had no entry for the case.
+    /// </remarks>
+    public int ScriptInstanceOwnerGdScript { get; init; } = 0x10;
 
     /// <summary><c>ScriptInstance</c> slot holding the GCHandle to the managed object (§4.6: <c>+0x20</c>).</summary>
     public int ScriptInstanceGcHandle { get; init; } = 0x20;
@@ -160,6 +196,7 @@ public sealed record GodotOffsetTable
         GodotField.StringNameDataToBuffer => StringNameDataToBuffer,
         GodotField.CowDataSizeBackOffset => CowDataSizeBackOffset,
         GodotField.ScriptInstanceOwner => ScriptInstanceOwner,
+        GodotField.ScriptInstanceOwnerGdScript => ScriptInstanceOwnerGdScript,
         GodotField.ScriptInstanceGcHandle => ScriptInstanceGcHandle,
         _ => throw new ArgumentOutOfRangeException(nameof(field), field, "Unknown Godot field."),
     };
@@ -188,6 +225,7 @@ public sealed record GodotOffsetTable
         GodotField.StringNameDataToBuffer => this with { StringNameDataToBuffer = offset },
         GodotField.CowDataSizeBackOffset => this with { CowDataSizeBackOffset = offset },
         GodotField.ScriptInstanceOwner => this with { ScriptInstanceOwner = offset },
+        GodotField.ScriptInstanceOwnerGdScript => this with { ScriptInstanceOwnerGdScript = offset },
         GodotField.ScriptInstanceGcHandle => this with { ScriptInstanceGcHandle = offset },
         _ => throw new ArgumentOutOfRangeException(nameof(field), field, "Unknown Godot field."),
     };

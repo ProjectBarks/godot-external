@@ -17,8 +17,8 @@ public enum GodotBuildTemplate
     Release = 0,
 
     /// <summary>
-    /// Debug export template — flag byte 1. Recorded but <b>unvalidated</b>; see
-    /// <see cref="GodotAbiProfiles.Godot451DebugUnvalidated"/>.
+    /// Debug export template — flag byte 1. Measured by the ABI grid; see
+    /// <see cref="GodotAbiProfiles.Godot451Debug"/>.
     /// </summary>
     Debug = 1,
 }

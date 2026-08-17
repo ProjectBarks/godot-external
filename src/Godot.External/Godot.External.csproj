@@ -15,6 +15,22 @@
   </PropertyGroup>
 
   <!--
+    Reflection/ (the getter-code offset decoder) needs a complete x86-64 decoder. docs/analysis.md
+    §8.1's rule is "borrow for metadata, hand-roll the rest". The hand-rolled side of that line is
+    for formats that are ~40 lines (PE headers, the descriptor). x86-64 instruction encoding is not
+    one of those: a partial decoder mis-decodes silently, which is precisely the failure mode
+    §8.9/AbsentNeverWrongTests exist to prevent. Iced is MIT, has no transitive dependencies, and is
+    the reference-quality decoder for .NET.
+
+    CONFINED ON PURPOSE. Nothing outside src/Godot.External/Reflection/ may reference Iced.Intel, so
+    if the core library must return to a BCL-only dependency graph before packaging (§8.6), that
+    folder lifts out into its own project without touching anything else.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Iced" Version="1.21.0" />
+  </ItemGroup>
+
+  <!--
     NOT PACKABLE YET. Per docs/analysis.md §8.6/§8.9 this stays private until the ABI grid
     (tools/godot-abi-grid) shows the calibrator solving layouts it has never seen. Shipping the
     §4.6 offset table without that evidence would publish one validated cell of a large matrix
@@ -31,6 +47,21 @@
   -->
   <ItemGroup>
     <InternalsVisibleTo Include="Godot.External.Tests" />
+    <!--
+      The calibrator (docs/analysis.md §12.5) is the one production consumer that needs the seam
+      itself rather than the library above it: it supplies the IByteSource adapter over LiveClr's
+      reader, and it drives the CowData/StringName decoders against CANDIDATE offsets, before any
+      profile exists to read them through. Widening the seam into public API to serve it would
+      export the very thing §8.8 keeps replaceable.
+    -->
+    <InternalsVisibleTo Include="Godot.External.Calibrator" />
+    <!--
+      bench/ measures the read path from outside the library but below its API: it needs IByteSource
+      to install a counting decorator under the cache, and MemorySnapshot to install the cache at
+      all. Measuring only through the public surface would leave the syscall count — the number the
+      whole exercise is about — unobservable.
+    -->
+    <InternalsVisibleTo Include="Godot.External.Bench" />
   </ItemGroup>
 
 </Project>

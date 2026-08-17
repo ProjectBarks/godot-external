@@ -63,6 +63,7 @@ public enum GodotField
 
     /// <summary><c>ScriptInstance</c> back-reference to its owning <c>Node*</c> — a free self-check.</summary>
     ScriptInstanceOwner,
+    ScriptInstanceOwnerGdScript,
 
     /// <summary><c>ScriptInstance</c> slot holding the GCHandle to the managed C# object.</summary>
     ScriptInstanceGcHandle,
