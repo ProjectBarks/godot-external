@@ -1,0 +1,59 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <RootNamespace>Godot.External.Bench</RootNamespace>
+    <AssemblyName>Godot.External.Bench</AssemblyName>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <SupportedOSPlatform>windows</SupportedOSPlatform>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <IsPackable>false</IsPackable>
+    <!-- Wall time is one of the reported metrics; a Debug build would report the harness, not the cache. -->
+    <Optimize Condition="'$(Configuration)' == 'Release'">true</Optimize>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Godot.External\Godot.External.csproj" />
+  </ItemGroup>
+
+  <!--
+    Attaching to a live game needs LiveClr's process reader, which is a sibling checkout rather than
+    a package. The benchmark must still build and run without it: the synthetic heaps and the
+    recorded fixture are the CI path, and requiring a second repository to compile a benchmark whose
+    whole point is that it needs no game would be absurd.
+
+    Note there is deliberately no reference to Godot.External.Calibrator, which has a scanner this
+    could have reused. Targets/ProcessScanner.cs reimplements the two methods needed instead: the
+    calibrator is the project most likely to be mid-edit, and a benchmark that stops building when
+    somebody else is working stops being a benchmark.
+
+    So the live target is compiled in only when LiveClr is actually next door. The pid option then
+    reports that it was built out, rather than failing to parse.
+  -->
+  <PropertyGroup>
+    <LiveClrProject>$(MSBuildThisFileDirectory)..\..\..\LiveClr\src\LiveClr\LiveClr.csproj</LiveClrProject>
+    <HasLiveClr Condition="Exists('$(LiveClrProject)')">true</HasLiveClr>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(HasLiveClr)' == 'true'">
+    <DefineConstants>$(DefineConstants);LIVE_TARGET</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(HasLiveClr)' == 'true'">
+    <ProjectReference Include="$(LiveClrProject)" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(HasLiveClr)' != 'true'">
+    <Compile Remove="Targets\**\*.cs" />
+  </ItemGroup>
+
+</Project>
