@@ -61,6 +61,26 @@ Godot's layout"*.
 Note official export templates are **single-precision only** — the `precision=double` cells need an
 engine built from source, and `real_t` width moves every float offset.
 
+## Caching is optional, scoped, and was chosen by measurement
+
+Reads go straight to the target by default — one `ReadProcessMemory` per field, no cache anywhere.
+`SceneEpoch.Snapshot()` opts into a coherent one for the duration of a `using` block, and the scope
+*is* the invalidation: nothing else in the library holds bytes across a poll.
+
+`bench/` measures it. Against Slay the Spire 2, a 4 Hz subtree poll falls from 105,740 syscalls and
+71 ms to 5,980 and 11 ms. The design that was expected to win — an object-granular cache fetching a
+whole node struct per first touch — lost to a plain page cache with a **512-byte** block, and
+`bench/README.md` says so with the table. The 4 KiB default LiveClr uses is also wrong here: a Godot
+`Control` is ~1.3 KB and only 1.76 nodes land in a 4 KiB page, so 4 KiB blocks read 43.8 bytes for
+every byte a tree walk uses.
+
+```
+dotnet run -c Release --project bench/Godot.External.Bench
+```
+
+No game and no fixture required — synthetic heaps sweep allocator locality as a parameter, and a
+3 MB recorded fixture replays the real game's addresses byte for byte in CI.
+
 ## Offsets are derived, not just hardcoded
 
 The shipped table is a fast path and a cross-check. Calibration recovers offsets at connect from

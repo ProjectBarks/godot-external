@@ -1,6 +1,6 @@
 # untapped-scry — how it works, and how to build our own
 
-Analysis date: 2026-08-16. Subject: `vendor/untapped-scry` 6.12.6 and
+Analysis dates: 2026-08-16 – 2026-08-17. Subject: `vendor/untapped-scry` 6.12.6 and
 `vendor/untapped-node-native` 2.3.0, as vendored in this repo.
 
 Method: PE structure parsing, RTTI recovery, targeted decompilation (Ghidra 12.1.2 headless),
@@ -198,12 +198,24 @@ copies it into the engine object at `+0x3c`. So the variants are **debug vs rele
 template**, *not* Godot version — debug templates carry extra fields, which is why the layouts
 differ by ~80 bytes.
 
+> **Sharper than "version-keyed": scry has no version table at all.** The parser stores
+> `{u16 major, u16 minor, u16 patch, …, u8 isDebug}` — and **major/minor/patch are never read by
+> anything.** Every accessor tests exactly one byte, `*(char*)(engine + 0x3c)`. There is no
+> 4.3-vs-4.5 branch anywhere in the binary.
+>
+> That is a significant limitation, not a simplification: scry's Godot offsets are correct for the
+> one engine version they were measured against and silently wrong on any other. §12.7's measured
+> table shows how far apart 4.3 and 4.5 actually are (`control.offset` moves `0x68`). Calibration
+> is not a nicety here — it is the difference between supporting one build and supporting the
+> engine.
+
 `connection.ts:16` passes `'4.5.1'` with no suffix, and StS2 ships a release template, so
 **the release column is ours.**
 
 | Class | Accessor | Impl | **Release** (flag = 0) | Debug (flag = 1) | Shape | Verified |
 | --- | --- | --- | --- | --- | --- | --- |
 | CanvasItem | `isVisible` | `FUN_180011e30` | **`0x370`** | `0x3c0` | bool (vtable `+0x00`) | branch |
+
 | Control | `getGlobalPosition` | `FUN_180012c70` | **`0x3f8`,`0x3fc`** | `0x448`,`0x44c` | 2 floats (Vector2) | branch |
 | Control | `getOffset` | `FUN_180012d60` | **`0x470 + i*4`**, i=0..3 | `0x500 + i*4` | 4 floats | branch |
 | Control | `getScale` | `FUN_180012f50` | **`0x4a8`,`0x4ac`** | `0x4f8`,`0x4fc` | 2 floats | pattern |
@@ -214,6 +226,46 @@ differ by ~80 bytes.
 | Node | `getName` | `FUN_180016580` | delegates | | string | — |
 | Node | `getDotNetCoreObject` | `FUN_180016610` | delegates | | bridge | — |
 
+### `CanvasItem::visible` and its thirteen decoys
+
+`visible` is **one full byte, no mask** — and it sits in a run of booleans that are exactly what a
+value-scanning calibrator loses to. Layout verified from `scene/main/canvas_item.h`, **identical in
+4.3 and 4.5** with no `#ifdef`s. With `V` = offset of `visible`:
+
+| Offset | Field | Runtime behaviour |
+| --- | --- | --- |
+| `V−12` / `V−11` | `z_relative`, `y_sort_enabled` | static |
+| **`V−8`** | **`Window *window`** | **a pointer — the key discriminator** |
+| **`V+0`** | **`visible`** | the stored property |
+| `V+1` | `parent_visible_in_tree` | true iff all ancestors visible — decoy |
+| `V+2` | `pending_update` | **flips every frame** |
+| `V+3`…`V+7` | `top_level`, `drawing`, `block_transform_notify`, `behind`, `use_parent_material` | mixed |
+| `V+8` | `notify_local_transform` | static, usually 0 — decoy |
+| `V+9`…`V+10` | `notify_transform`, `hide_clip_children` | static |
+| `V+12` | `clip_children_mode` (u32) | ∈ {0,1,2} |
+
+Note `is_visible_in_tree()` is **computed**, never stored — so there is no cached tree-visibility
+byte to confuse with the property.
+
+**Two structural discriminators that need no timing:**
+
+1. **`visible` is always ≡ 0 (mod 8).** `CanvasItem`'s prefix through `window` is exactly `0x80`
+   bytes and `sizeof(Node)` is 8-aligned. That single rule eliminates **11 of the 13** boolean
+   decoys; only `visible` and `notify_local_transform` survive.
+2. **Read the qword at `V−8`.** For real `visible` that is `Window *window` — zero or a canonical
+   heap pointer. For `notify_local_transform` the same qword spans eight bools, so it is non-zero
+   with every byte ≤ 1. Reject on that pattern and the last decoy is gone.
+
+> **A temporal stability test discriminates against the correct answer here.** In a live UI
+> `visible` genuinely toggles between two readings — cards, tooltips, panels animating — so
+> "the byte must be identical across two reads" rejects the *real* field while the stable decoys
+> are eliminated by the differs-between-pair test, leaving nothing. That is precisely the
+> "never wrong, always absent" failure §12.7 measured at 11 of 24 runs. Structure beats sampling.
+
+**Also: the calibration pair must differ in the node's *own* flag.** If a node is invisible because
+an *ancestor* is hidden, `visible` is identical on both and the byte that differs is
+`parent_visible_in_tree` at `V+1`.
+
 **Independent corroboration.** Godot's
 [`scene/gui/control.h`](https://github.com/godotengine/godot/blob/master/scene/gui/control.h)
 declares `Control::Data` in the order `real_t offset[4]` → `real_t anchor[4]` → focus/grow
@@ -222,7 +274,7 @@ release column reproduces exactly that shape:
 
 ```
 0x370  CanvasItem visible
-0x3f8  (global position cache)
+0x3f8  (cached origin — see attribution note below; NOT a Control::Data member)
 0x470  offset[4]        0x470..0x47c   ← Data.offset[4]
 0x480  (anchor[4])                     ← Data.anchor[4], not read by scry
 0x490  (focus/grow enums, rotation)
@@ -234,6 +286,13 @@ release column reproduces exactly that shape:
 Ascending, non-overlapping, and consistent with upstream field ordering and single-precision
 `real_t` (4-byte reads). Two independent sources agreeing is the strongest signal available
 short of a live read.
+
+**Attribution correction for `0x3f8`.** It is listed inside the `Control::Data` mapping above, but
+upstream `Control::Data` has no such member and `0x3f8` sits well *below* `offset[4]` at `0x470`.
+It is far more likely a `CanvasItem`/transform-level cached origin. The **offset is not in doubt** —
+it is validated 30/30 as "what `getGlobalPosition` returns" — only the attribution. That matters,
+because it explains why this field's staleness is *structural* rather than incidental: it is a
+cache maintained by a different layer than the one whose coordinates callers expect.
 
 **Branch direction — settled for every accessor.** All twelve emit the identical pattern:
 
@@ -247,7 +306,21 @@ rows in the table above are therefore as reliable as the `branch` rows.
 
 That also settles the debug-column oddity: `getOffset` really does read `0x500..0x50c` while
 `getPosition` reads `0x508/0x50c` on the debug path — a genuine **overlap in scry's own debug
-constants**, confirmed in the disassembly, not a misreading on our part. The debug template is
+constants**, confirmed in the disassembly, not a misreading on our part.
+
+**There is a second debug-column defect**, found while encoding the table: debug `scale` (`0x4f8`)
+sits *below* debug `offset` (`0x500`), **inverting the field order** that the release column and
+upstream `control.h` both agree on (`offset[4]` → `anchor[4]` → … → `scale`).
+
+> ### The debug column is now MEASURED, and it was wrong — replace it
+>
+> The ABI grid exported real stock Godot templates and derived the offsets independently
+> (§12.7). **8 of 13 debug values here are contradicted.** The measured column is self-consistent
+> (`offset < scale < position < size`, matching release); this one was not. Use the measured table
+> in §12.7. The only entry this column got right is `node.scriptInstance` at `0x70`.
+>
+> The recovered pattern is much simpler than either guess: **debug = release + `0x8`, uniformly,
+> for every field in both 4.3 and 4.5.** The debug template is
 presumably an untested path for them. Irrelevant to us; the release column is what we use and it
 is validated 30/30 (§12.3) plus 60/60 on combat nodes (§12.4c).
 
@@ -267,7 +340,7 @@ string `"is_visible"`), so this is an easy and quiet mistake to make.
 Godot's `ScriptInstance`, and the managed object is two further hops away. Verified live:
 
 ```
-Node*  +0x68 -> ScriptInstance*
+Node*  +0x68 -> ScriptInstance*        (0x70 on the debug template)
                   +0x00   vtable pointer (inside the game exe's .text)
                   +0x08   back-reference to the owning Node*
                   +0x20   GCHandle  ->  *(handle) == managed C# object
@@ -278,6 +351,16 @@ For `NGame`: `native=0x1a9204c5580` → `scriptInstance=0x1a90351dd30` → `+0x2
 back-reference is a cheap self-check that you followed the right pointer.
 
 This is the route from a scene-tree node to the C# object holding game state, so it matters.
+
+**Caveat on the inner two hops.** `NodeScriptInstance` has both a release and a debug value
+(`0x68` / `0x70`), but `+0x08` and `+0x20` were **only ever observed on the release template** and
+are presented above without a column — which makes them look universal. If the debug template pads
+`Node`, it may pad `ScriptInstance` too. Untested in either direction; treat them as
+release-measured, not build-independent.
+
+**Do not mask the GCHandle's low bits.** Some CLR handle encodings tag them, and the live capture
+happened to be aligned. Masking would silently repair precisely the wrong-pointer case the `+0x08`
+self-check exists to catch — a misaligned slot should be reported as suspect, not quietly fixed.
 
 **`getGlobalPosition` is unreliable.** Live, it returned `[0,0]` for `MainMenuTextButtons` and
 `ContinueButton` despite both having real positions — it reads Godot's *cached* global
@@ -304,12 +387,126 @@ keep that approach.
 3. bulk-read `len * 4` bytes via vtable `+0x10` (one block read, not per-character)
 4. decode
 
+**There is a third header word, and it is the one that makes validation possible.** `CowData`'s
+layout is `REF_COUNT_OFFSET = 0`, `SIZE_OFFSET = 8`, `DATA_OFFSET = 16` — identical in 4.3 and 4.5,
+with `USize = uint64_t`. So for a `_ptr` **P**: `size` is at `P−8` and **`refcount` at `P−16`**.
+
+That second header word is an *independent* constraint a random qword will not satisfy, and
+together with `P % 16 == 0` and the NUL terminator at `P + (size−1)*4` it is what distinguishes a
+real Godot `String` from arbitrary pointer-shaped bytes.
+
+**Scry performs none of these checks.** Its entire validation is a single `ptr == 0` early-out — a
+wrong offset either throws or silently returns garbage. Copying its trust model is how a calibrator
+ends up decoding a different wrong address on every run.
+
+**Two traps in that recipe, found while implementing it:**
+
+- **The stored count includes the trailing NUL.** A literal implementation of steps 1–4 appends
+  `U+0000` to every string. Stop at the first NUL — correct under either convention.
+- **`- 8` is `sizeof(USize)`, not a universal constant.** It is the x64 case; derive it from
+  pointer width rather than hardcoding, or a 32-bit target reads the refcount as the length.
+
 `getName` instead walks code units one remote read at a time — noticeably worse, and both paths
 then truncate each `char32_t` to a byte when building the JS string. **Fine for ASCII, lossy for
 anything else.** Our implementation should decode UTF-32 properly and always use the bulk read.
 
 Vtable slots observed across the Godot layer: `+0x00` bool/byte, `+0x10` readBytes (bulk),
 `+0x28` float, `+0x40` pointer, `+0x60` uint32, `+0x68` uint64/size.
+
+### 4.6b — Scry's Godot layer is 18 hardcoded immediates, and nothing else
+
+Re-derived exhaustively from the binary with a capstone harness (PE + `.pdata`, all 2,488 functions
+disassembled) rather than by sampling. **This negative result is load-bearing** — it is the
+justification for building a calibrator at all, so it is recorded as measurement, not impression.
+
+Every native read in scry's Godot layer goes through one code shape, and there are exactly 18 sites:
+
+```
+mov  edx, <debug const>
+mov  r9d, <release const>
+cmp  byte ptr [rax + 0x3c], 0    ; rax = engine[1], +0x3c = isDebug
+cmove edx, r9d
+add  rdx, [engine]
+call <vtable read primitive>
+```
+
+`cmp byte ptr [reg+0x3c]` occurs 19 times binary-wide; 18 are these, 1 is unrelated. Counting the
+accessors independently — CanvasItem 3, Control 9, Node 4, Label 1, RichTextLabel 1 — also gives 18.
+**The enumeration is complete; there is no other mechanism anywhere in the binary.**
+
+**Scry uses no Godot reflection of any kind.** Zero occurrences of `ClassDB`, `ObjectDB`,
+`get_property_list`, `StringName`, `Variant`, `SceneTree`, `MethodBind`, `bbcode`, `xl_text`,
+`visible` or `godot` — searched as ASCII, as UTF-16, and as the 8-byte immediate fragments MSVC emits
+for stack-built SSO strings. **Scry never locates the Godot module at all**: the only module-name
+comparison in the binary targets `coreclr.dll`, and there is no PE export walk against the game
+executable. The entire Godot API surface is six class names and thirteen methods in one `.rdata`
+cluster, with no `getClassName` and no type check on the native side.
+
+**One binary across Godot versions? It does not do that.** The version string is parsed into
+`{major, minor, patch, …, isDebug}` and stored at engine `+0x30..+0x3d` — but scanning every memory
+operand in the binary shows **major, minor and patch are never read by anything**. The only field
+consumed is the `isDebug` byte, set by `strstr` against the literal `"-debug"`. Scry's offsets are
+correct for the single build someone measured and silently wrong on every other, which §12.7 confirms
+directly: 4.3 moves `visible` by `0xa8` and the whole `Control` block by `0x60`, and scry has no way
+to express that.
+
+So the calibrator is not solving a problem scry solved more cleverly. **It is solving a problem scry
+never attempted.**
+
+One consequence for the harness: because scry truncates each `char32_t` to its low byte (above), it
+**cannot serve as an oracle for the non-ASCII grid fixtures** — against `ρich ✦ テキスト 𝄞` it will
+disagree with a correct decoder and the correct decoder will be the one that is right.
+
+**Scry's `Label.text` offset may be `xl_text`, not `text`.** Godot declares `String text` immediately
+followed by `String xl_text`, and `Label.getText`'s debug−release delta is `0x48` — one `String` slot
+short of the `0x50` that most of the table shows — which would be consistent with its release
+constant pointing at the translated copy and its debug constant at the original.
+
+> **The delta argument is weaker than this section originally claimed, and does not stand on its
+> own.** An exhaustive re-derivation from the binary (capstone over all 2,488 functions) measured the
+> deltas directly: **9 of 13 are `0x50`, not "every other constant".** The exceptions are
+> `scriptInstance` (`0x8`), `Label.text` (`0x48`), `Control.offset` (`0x90`) and
+> `RichTextLabel.text` (`0xa0`) — four, not one. `Label.text` is therefore not an anomaly against a
+> uniform background; it is one irregular value among several. And since §12.7 established that
+> scry's debug column is contradicted 8 of 13 times by measurement, the deltas are computed from
+> numbers already known to be junk. Treat this paragraph as *consistent with* the `xl_text` reading,
+> never as evidence for it. It never mattered to scry because `set_text` does `xl_text = atr(text)`, and the
+non-translating path returns by value — so `CowData::_ref()` shares the allocation and
+**`xl_text._ptr == text._ptr` exactly, with refcount ≥ 2.** The two only diverge when a translation
+actually resolves, at which point their contents legitimately differ.
+
+Practical rule: accept either slot of the pair and prefer the lower.
+
+> **§4.6's `Label.text` release value is wrong.** The ABI grid's calibrator, knowing none of the
+> above, derived **`0x7f8`** from target memory alone, and its set is internally consistent
+> (`debug = release + 8`): 4.5-rel `0x7f8`, 4.5-dbg `0x800`, 4.3-rel `0x8f0`, 4.3-dbg `0x8f8`.
+> Repeated across nine grid series with zero deviation. So **`0x800` is `xl_text` and `text` is
+> `0x7f8`.**
+>
+> This was originally written up as *two* independent routes agreeing — a decompiled delta anomaly
+> and a live derivation. **It is one route.** The delta anomaly does not survive measurement (see the
+> correction above): `0x48` is one of four irregular deltas, not a lone outlier against a uniform
+> `0x50`, and it is computed from a debug column that §12.7 contradicts 8 of 13 times. The live
+> derivation is the sole support for `0x7f8`. That support is strong on its own — but the corroboration
+> claimed here never existed, and a conclusion believed for two reasons when only one is real is
+> exactly the kind of thing this document is supposed to catch.
+>
+> The table below still records `0x800`, which is what scry uses and what §12.3b validated *as a
+> readable string* — it just happens to be the translated copy, which is why nobody noticed. Prefer
+> `0x7f8` for `text`. This is also the first time a text offset has ever been cross-checked in this
+> project, and it failed on the first attempt, which is the harness doing its job.
+
+**`RichTextLabel` has no `xl_text` member at all** — `_apply_translation()` uses a local. It has
+exactly one stored `String`, holding the **raw BBCode source**, so any expected-text comparison
+against *rendered* text will never match on a bbcode-enabled node.
+
+**Composing global position has a type trap.** `Control.position` is a `Control` field, but the
+scene tree contains non-`Control` ancestors. Walking up and reading that offset off, say, an
+`AudioStreamPlayer` returns garbage rather than failing — the same denormal `2.6e-38` behaviour
+§12.4c observed from `engine.getControl()` on a non-Control. The value layer has no type
+information, so composition must take an "is this ancestor a Control?" gate supplied by the scene
+layer. Also note composition is **translation-only**: a scaled or rotated ancestor is unhandled,
+as in scry's own `computeGlobalPosition`.
 
 **`getGlobalPosition` is a cached field, not a computed transform — settled.** The accessor
 (`FUN_180012c70`) performs exactly two `readFloat` calls at `0x3f8`/`0x3fc` and no arithmetic:
@@ -373,6 +570,43 @@ Cache whole pages for the duration of one snapshot so a pointer and its target c
 same moment, instead of dozens of independent `ReadProcessMemory` calls across a mutating
 heap. This is why our retry logic works as well as it does, and we want it.
 
+**Block size, measured — and 4 KiB is the wrong default for a scene walk.** Benchmarked against the
+live game, a 4 Hz subtree poll fell from **105,740 syscalls / 71 ms to 5,980 / 11 ms** with a page
+cache. But the winning block was **512 bytes**, not 4 KiB: a Godot `Control` is ~1.3 KB, so only
+**1.76 nodes land in a 4 KiB page** and such blocks read **43.8 bytes for every byte a walk actually
+consumes**.
+
+Measured cross-node locality on the live game: **1.76 nodes per 4 KiB page**, with only 6.7% of
+BFS-consecutive node pairs sharing one. Poor, but not absent.
+
+| Workload | Variant | Syscalls | Amplification |
+| --- | --- | ---: | ---: |
+| tree walk | uncached | 15,616 | 1.00× |
+| tree walk | **page-512** | 3,887 | 13.17× |
+| tree walk | page-4k *(LiveClr default)* | 1,618 | **43.84×** |
+| tree walk | span (object-granular) | 4,453 | 16.45× |
+| geometry | page-16k | 3,400 | **314.64×** |
+| 4 Hz poll | **page-128** | 8,320 | **1.24×** |
+| 4 Hz poll | page-512 | 5,980 | 3.55× |
+
+The design expected to win — object-granular, fetching a whole node struct on first touch — **lost**,
+and was *strictly dominated* by `page-512` on the tree walk: fewer syscalls, fewer bytes, faster.
+
+The reason is that the fields this reader touches **cluster**: a walk reads `0x148` and `0x1c0`,
+120 bytes apart; geometry reads `0x370` and `0x470–0x4c8`. A small aligned block fetches only the
+clusters a given workload uses, while a ~1,224-byte object span always fetches all of them. That
+held even on a synthetic heap with deliberately scattered allocation.
+
+> **Amplification, not hit rate, is the metric that exposes this.** A cache can report a healthy hit
+> rate while reading two orders of magnitude more bytes than the caller uses. Measure
+> bytes-read-per-useful-byte, or a page cache will look like a success while being the bottleneck.
+
+**Caching must also be opt-in and scoped.** A cache that never invalidates has now silently defeated
+a temporal check three times in this project (§6.4's agree-twice, the calibrator's two-readings
+check, and `visible` derivation). The resolution that works: the source **announces** coherence and
+the weaker check steps aside *visibly*, with a counter recording the substitution — rather than
+being cancelled by accident.
+
 ### 4.8 Error surface
 
 `ScryMemoryAccessException` → JS `type: 'memory-access-exception'`. Read failures format as
@@ -380,6 +614,26 @@ heap. This is why our retry logic works as well as it does, and we want it.
 in `scryObject.ts:23` — `isTransientRead` keys off the exception type and the
 `remote address 0+:` pattern. **Our implementation must preserve this contract** or that retry
 logic silently stops working.
+
+**The trailing colon is a separator, not punctuation — and the whole contract is stricter than it
+looks.** The classifier is:
+
+```js
+if (/remote address 0+:/.test(m)) return false                       // null deref: never retry
+return m.includes('Invalid access to memory location')
+    || m.includes('Only part of a Read')                             // otherwise: retry
+```
+
+So a message ending at the address matches **neither** arm and `isTransientRead` returns false for
+everything — retry silently never fires. The colon terminates the address for the `0+:` test *and*
+introduces the appended Win32 error text that the second arm actually matches. Full shape:
+`Failed to read {N} bytes from remote address {ADDR:X}: {win32 message}`.
+
+**Measured caveat:** `ReadProcessMemory` returns `ERROR_PARTIAL_COPY` (299) for a **wholly
+unmapped** address as well as a straddling one — the Win32 error does *not* distinguish a torn
+read from a bad pointer. Both are retryable so behaviour is unaffected, but nothing should be
+built on "299 means torn". Only pre-syscall rejections (`ERROR_NOACCESS`, 998) can be labelled
+precisely.
 
 ---
 
@@ -434,7 +688,7 @@ all v1). The layouts we care about, extracted verbatim:
 ```jsonc
 "Object":      { "m_pMethTab": 0 }
 "String":      { "m_StringLength": 8, "m_FirstChar": 12 }
-"Array":       { "m_NumComponents": 8, "!": 16 }        // "!" = element base
+"Array":       { "m_NumComponents": 8, "!": 16 }        // "!" = TYPE SIZE (see below)
 "MethodTable": { "MTFlags": 0, "BaseSize": 4, "MTFlags2": 8, "NumVirtuals": 12,
                  "NumInterfaces": 14, "ParentMethodTable": 16, "Module": 24,
                  "EEClassOrCanonMT": 40, "PerInstInfo": 48 }
@@ -449,6 +703,12 @@ all v1). The layouts we care about, extracted verbatim:
 "ArrayClass":  { "Rank": 88 }
 "ModuleLookupMap": { "TableData": 8 }
 ```
+
+**Correction on `"!"`.** An earlier revision annotated it as "element base", inferred from `Array`
+where element data does start at 16. That generalises wrongly: `"!"` is the type's **total size**.
+`GCHandle` carries `{"!": 8}` with no fields at all, and `MethodDescChunk` carries `{"!": 24}`
+alongside five real fields — neither is an element base. Both readings coincide for `Array` only
+because an array's header size *is* where its elements begin.
 
 Relevant scalar globals: `ObjectToMethodTableUnmask: 0x7`, `ObjectHeaderSize: 0x8`,
 `MethodDescAlignment: 0x8`, `MethodDescTokenRemainderBitCount: 0xc`,
@@ -465,7 +725,24 @@ update that bumps the runtime — the procedure is in §10.
 ### 5.3 How globals resolve
 
 Globals appear as `"AppDomain": [[1], "pointer"]` — the inner number is an **index into
-`pointer_data`**, which holds the *address of* the global. Verified against the shipped DLL:
+`pointer_data`**, which holds the *address of* the global.
+
+**There are two legal spellings and only one appears in our fixture.** Per the official cDAC
+`data_descriptor.md`, the compact form is unambiguous by *outer array length*:
+
+| Spelling | Meaning |
+| --- | --- |
+| `"G": [[12], "pointer"]` | indirect — `pointer_data[12]` holds the address of `G` (what .NET 9 emits) |
+| `"G": [12]` | **also indirect** — one-element array is unambiguously an indirect value |
+| `"G": [12, "uint32"]` | literal — two elements are "value and type" |
+
+The bare `[12]` form is easy to misread as a typeless literal, which silently turns a
+`pointer_data` **index** into the global's **value** — a small, plausible integer, the §6.4 failure
+class exactly. The .NET 9 descriptor always publishes types, so a fixture-driven test will not
+catch it; a .NET 10+ or non-CoreCLR descriptor using the terse form would corrupt every indirect
+global.
+
+Verified against the shipped DLL:
 
 | Index | Global | Address (`.data`) |
 | --- | --- | --- |
@@ -486,7 +763,15 @@ specifies the algorithm, so it need not be reverse engineered: AppDomain → `As
 `IsLoaded`/`IsCollectible`/`Error` → `Assembly.Module` → `SimpleName` (UTF-8), `Path`/`FileName`
 (UTF-16). `ModuleLookupMap`s are segmented: read a segment's `Count`, index `TableData` if in
 range, else subtract and follow `Next`; mask flag bits with `SupportedFlagsMask` (valid only on
-the first segment); enumeration starts at index 1.
+the first segment).
+
+> **None of `Count`, `Next` or `SupportedFlagsMask` is published by the .NET 9 descriptor** (§5.5).
+> So this documented algorithm cannot be implemented as written: bound the walk by the metadata row
+> count instead of a segment `Count`, and **derive** the flag mask rather than reading it — the
+> field-offset calibration in §8.8 exists partly for this reason. What follows describes the
+> contract, not what .NET 9 lets you do.
+
+Enumeration starts at index 1.
 
 ### 5.5 The honest gap
 
@@ -494,6 +779,18 @@ The .NET 9 descriptor's 29 types **do not include `AppDomain`, `Assembly`, or `A
 (`baseline: "empty"` means nothing is inherited). So the descriptor gives us everything from a
 *module or object pointer downward*, but not the layout needed to walk the assembly list from
 the AppDomain root.
+
+**The full gap list, as found by implementing against it** — this section originally named only the
+first row:
+
+| Missing from the descriptor | Consequence |
+| --- | --- |
+| `AppDomain`, `Assembly`, `ArrayListBase` | cannot walk the assembly list from the root |
+| `FieldDesc`, `EEClass.FieldDescList`, MT token field | instance offsets must be **calibrated**, not read (§8.8) |
+| `DomainLocalModule`, MT auxiliary data | **static** addresses have no route *and no calibration anchor* — ClrMD required |
+| `ModuleLookupMap.Count` / `.Next` / `SupportedFlagsMask` | §5.4's segment-chaining walk cannot be implemented as written — bound the walk by the metadata row count instead |
+| `EEClassOrCanonMT` union tag | try both readings, accept whichever closes the `EEClass.MethodTable` back-pointer loop |
+| `MTFlags` bit meanings | component size must be *checked* against `StringMethodTable` (must report 2) and `ObjectArrayMethodTable` (must report a pointer), never assumed |
 
 That is a one-time, cold-path problem with two clean answers:
 
@@ -573,6 +870,18 @@ Add a structural guard:
 - **Snapshot page cache** (§4.7) — the structural fix: one consistent memory image per snapshot
   closes most of the window rather than detecting after the fact.
 
+> **Correction — these two are not complementary, they cancel.** An earlier revision listed
+> agree-twice and the page cache as stacking mitigations. Inside one snapshot they do not: the page
+> cache serves the second traversal **the identical frozen bytes**, so agree-twice is a guaranteed
+> no-op and detects nothing. The two are alternatives at different scopes:
+>
+> | Scope | What actually helps |
+> | --- | --- |
+> | Within one snapshot | the page cache (or PSS) — agree-twice is dead weight here |
+> | Across snapshots | agree-twice — the only way to notice the world moved between them |
+>
+> Pick per scope. Running both inside a snapshot buys nothing and reads like defence in depth.
+
 This is the single most important implementation finding in the document.
 
 ### 6.5 Milestones
@@ -636,17 +945,9 @@ error, so a snapshot needs structural validation, not just successful reads.
 The §4.6 table is build-specific — Godot version × release/debug template × precision × engine
 fork. Hardcoding it means one validated cell of a large matrix. **Probe 15 shows the table can be
 rediscovered at connect time instead**, against a fresh process with new ASLR and zero prior
-knowledge of the offsets:
+knowledge of the offsets.
 
-| Offset | How it was derived | Result |
-| --- | --- | --- |
-| child-list head `0x148` | the only pointer `p` in the object where `*(p + 0x18)` is a known child | **MATCH** |
-| parent `0x128` | the only field equal to the known parent's native pointer | **MATCH** |
-| size `0x4c0` | scan for the design viewport (`1920×1080`) on a full-screen Control, then **intersect** with a second Control of different size (`200×50`) | **uniquely derived** |
-
-The intersection step matters: one sample gave a single candidate here but the second Control
-alone produced four (`0x4c0`, `0x4c8`, `0x4d4`, `0x4f4`). Two samples with different values
-collapse it to one. A third would harden it further.
+**Measurements are in §12.5** — do not duplicate them here.
 
 **Caveat on this experiment.** Ground truth for the structural derivations came from scry, which a
 real implementation would not have. It does not need it — the managed side supplies the same
@@ -1058,7 +1359,21 @@ pointer can address a different, entirely plausible-looking node. Silent, like �
 | **Snapshot** | managed addresses, static-root results, page cache, array/list contents, values |
 
 Encode it: `ClrObject` cannot outlive a `Snapshot`; `GodotNode` cannot outlive a `SceneEpoch`.
-This turns §7b.1 and §12.4e from documentation into type errors.
+
+**Correction — this cannot be a compile error, and claiming it could was wrong.** The only C#
+construct expressing "cannot outlive" statically is `readonly ref struct`, and ref structs cannot
+go into a `List<T>` — which a 2,300-node tree walk requires. What is actually achievable, and what
+was built:
+
+- **inert address types** — a `NativePtr`/`ManagedPtr` distinction so passing a managed address to
+  a native accessor does not compile, and the address types have no method that reads memory
+- **handles obtainable only from a live scope**, as classes with no accessible constructor (so no
+  `default` with a null owner)
+- **a runtime failure at point of use** — every read re-enters the owning scope, which throws once
+  expired
+
+That is a strong runtime guarantee plus a genuine compile-time guarantee about *pointer kind*. It
+is not "documentation becomes type errors", and the design should not be sold as if it were.
 
 ### Snapshot modes
 
@@ -1068,8 +1383,18 @@ enum SnapshotMode { LiveValidated, ProcessSnapshot }
 
 - **`LiveValidated`** — page cache + re-resolved roots + bounded traversal + agree-twice. No
   suspension. The product mode as currently understood.
-- **`ProcessSnapshot`** — `PssCreateSnapshot`, which is what ClrMD itself recommends over
+- **`ProcessSnapshot`** — `PssCaptureSnapshot`, which is what ClrMD itself recommends over
   unsuspended inspection.
+
+> **Measured, and it settles the open question: PSS is NOT a viable product mode.** An early
+> benchmark on a small test host gave ~1 ms and this section speculated it might replace the whole
+> consistency layer. Against the **real game** (316 MB working set) the median capture is
+> **193 ms** (188–196). At 4 Hz that is a fifth of every second spent capturing, with a 193 ms
+> stall each time — unusable for an overlay. Cost scales with the target's VA size, exactly as the
+> caveat warned.
+>
+> PSS remains valuable as a **correctness oracle** in tests, which is where it now belongs. The
+> page cache stays the product mechanism.
 
 **Its first job is as a correctness oracle**: diff `LiveValidated` against a PSS-coherent read to
 build a randomized test for exactly the §12.4e tearing class — the one bug we found that is
@@ -1095,6 +1420,20 @@ int floor = run.Field("RunState").Field("ActFloor").ReadInt32();
 `List<T>`, statics, inheritance, named instance fields — §12.4b showed that reaches full game
 state without a reflection framework.
 
+> **The `.Static("Instance")` step in that example is not achievable on .NET 9 alone.** Building it
+> exposed a gap §5.5 anticipates in general but this section presented without caveat. The
+> descriptor publishes **no** `DomainLocalModule`, no `MethodTable` auxiliary data, no `FieldDesc`,
+> and no managed static whose address is already known — so unlike instance fields there is not
+> even a **calibration anchor** to derive one from. Static roots need ClrMD (cold, suspended, once
+> at connect) exactly as §5.5 prescribes; the address is process-tier cacheable and the value is
+> re-read per snapshot (§7b.1).
+>
+> **Instance** fields *are* derivable: the descriptor publishes eight of `System.Exception`'s
+> managed field offsets plus `ExceptionMethodTable`, giving eight independently-known answers to
+> calibrate the `FieldDesc` encoding against — §12.5's technique applied to the runtime itself.
+> Convergence on all eight is the safety property: a wrong guess fails to converge rather than
+> producing a plausible offset.
+
 **Error model — do not leave this implicit.** `Validate()` must be *inspectable*, not throwing: an
 overlay's correct response to a suspect snapshot is "reuse the last good one," which is impossible
 if validation throws. Preserve §4.8's error shapes so `isTransientRead`/`READ_ATTEMPTS`
@@ -1105,6 +1444,21 @@ if validation throws. Preserve §4.8's error shapes so `isTransientRead`/`READ_A
 1. **A recorded-fixture provider.** Serialize a snapshot's page cache and replay it. Everything in
    §12 required a live game; without fixtures, `LiveClr.Tests` and `Spectra.Sts2.Tests` cannot run
    in CI at all. Cheap to build, and it is what makes the other tests possible.
+
+   **But a fixture is a snapshot, not a history — it cannot be the §12.4e tearing oracle.** An
+   earlier revision of this section conflated the two. A coalesced single image *by construction*
+   cannot reproduce a torn walk: the tearing signal is **two reads of the same address disagreeing
+   across time**, and coalescing collapses exactly that. The two artifacts are distinct:
+
+   | Artifact | Gives you |
+   | --- | --- |
+   | Recorded fixture (one image) | deterministic CI for parsing, layout, decoding |
+   | **PSS diff against live** | the tearing oracle — a coherent reference to compare against |
+   | Fixture *sequence*, or per-read sequencing in the container | a replayable tearing regression |
+
+   Build the container versioned with a flags word so per-read sequencing is an additive v2, and
+   do not assume fixture replay already covers §12.4e. **PSS is the oracle that works today** —
+   measured at ~0.7–1.0 ms per capture, well inside a 4 Hz budget.
 2. **Split calibration.** §12.5 used two distinct techniques: *structural* (find the offset holding
    a known pointer — engine-agnostic, belongs in `LiveClr` or a shared utility) and *semantic*
    (size == design viewport — Godot-specific, belongs in `Godot.External/Abi`). Keeping them
@@ -1130,13 +1484,41 @@ But define the provider seam from day one (§8.7) even with a single implementat
 No separate `MemoryReader` / `CdacReader` / `MetadataReader` packages — plumbing, and Microsoft's
 cDAC is heading toward owning that space.
 
+## 8.8b One implementation of each parser — a finding from building it
+
+The PE header walk is needed twice: to find `DotNetRuntimeContractDescriptor` in the export table
+(§4.3), and to reach ECMA-335 via data directory 14 (§12.4d). Written independently, the two copies
+**drifted within a single build session**, and the weaker one silently lacked three bounds checks:
+
+| Check | Export copy | Metadata copy |
+| --- | --- | --- |
+| `e_lfanew` upper bound | `0x1000` | `0x1000_0000` — chases a bad base 256 MB into other memory |
+| `NumberOfRvaAndSizes` | capped at 16 | unbounded (only `<= 14` tested) |
+| `SizeOfImage` / RVA bounds | enforced | **absent entirely** |
+
+The third is the dangerous one. Pages adjacent to a loaded module are routinely mapped, so a stale
+`Module.Base` could read a plausible-looking COR20 header out of a neighbouring allocation — the
+§6.4 wrong-but-plausible failure, occurring inside the parser whose job is to prevent it.
+
+**Rule: one implementation of each format parser, taking the _union_ of hardening.** Where copies
+disagree the stricter wins — unless the difference is genuinely scope-specific and documented (the
+machine-type filter belongs only to the export path, which dereferences pointers out of the image;
+applying it to the metadata path would make ARM64 modules unreadable for no safety gain).
+
 ## 8.9 Making `Godot.External` publishable — manufacture the compat matrix
 
 The blocker on publishing (§8.6) is that we have measured **one cell**: Godot 4.5.1, release
 template, single precision, one modified engine. Waiting to encounter more real games is a slow
 and passive way to fix that.
 
-**We can generate the matrix instead.** Godot ships official export templates for every version.
+**We can generate most of the matrix instead.** Godot ships official export templates for every version.
+
+> **Correction — the precision axis cannot be downloaded.** Official templates are
+> **single-precision only**. `precision=double` requires building the engine from source
+> (`scons … precision=double`), so those 8 cells cannot be filled by installing anything. This is
+> the most expensive gap in the plan, because `real_t` width changes **every float offset** — it
+> is precisely the axis most likely to break a calibrator, and the one we can least cheaply test.
+> Budget for a source build, or scope the published claim to single precision and say so.
 A minimal test project — a scene with Controls of *known* sizes, nested nodes with *known* names,
 a Label with *known* text — exported across the axes gives ground truth we control completely:
 
@@ -1205,6 +1587,19 @@ tools/godot-abi-grid/
 - **Known visible/invisible pair** for `isVisible`, and non-default `scale` / anchor `offset`
   values so those accessors are exercised rather than reading zeros.
 - **A `RichTextLabel`** — §4.6 gave it a separate text offset from `Label`.
+- **At least one Control with NON-ZERO anchors.** `Control::Data` places `anchor[4]` immediately
+  after `offset[4]`, so with all-zero anchors a calibrator that locks onto the *wrong one of the
+  two* still looks correct. This is the tie-breaker for that pair, and it is invisible without it.
+- **Non-ASCII must include an astral character** (e.g. U+1D11E `𝄞`) — one `char32_t`, two UTF-16
+  units. BMP-only samples miss surrogate-pair handling, and Latin-1 misses the truncation bug
+  entirely: U+00E9 truncated to `0xE9` and re-widened is `é` again, so `café` round-trips *through*
+  a lossy decoder and proves nothing.
+- Record in `expected.json` what a **truncating** decoder would emit, so a failure names the §4.6
+  bug rather than printing a generic mismatch.
+
+**Build-script trap:** PowerShell 5.1's `Get-Content`/`Set-Content` default to ANSI and will
+silently destroy the non-ASCII fixtures — producing a "the calibrator is lossy" verdict actually
+caused by the build script. Do all file I/O through explicit UTF-8-no-BOM .NET calls.
 
 **What `calibrate.mjs` asserts per build:**
 
@@ -1257,6 +1652,196 @@ decompiles nearly intact.
 **The runtime is more informative than the binary.** The single highest-value step in this
 whole analysis was not decompilation — it was reading `coreclr.dll`'s export table and parsing
 40 bytes of static data.
+
+---
+
+## 10b. Live validation of the reimplementation
+
+The C# rewrite was run against the real game for the first time — pid 418440, CoreCLR
+9.0.725.31616, the exact build §5.2's descriptor was extracted from.
+
+| Step | Result |
+| --- | --- |
+| Attach + module discovery | **PASS** — 198 modules, `coreclr.dll` @ `0x7FFD41C20000`, 1.0 ms |
+| Remote PE export walk | **PASS** — descriptor found at `coreclr+0x461D30`, 3.5 ms |
+| Descriptor header + JSON | **PASS** — `DNCCDAC\0`, 3201 B |
+| **Byte-exact vs static extraction** | **PASS** — identical char-for-char; 0 diffs across 29 types / 95 offsets / 22 globals |
+| ECMA-335 for `sts2.dll` | **PASS** — 9410 typedefs, 40038 fielddefs, real names resolved |
+| Field values vs independent reader | **PASS** — 11/11 objects, **90/90 field values agreed** |
+| Snapshot lifetime / `Validate()` | **PASS** — bad pointer counted not crashed; disposed → not usable, no throw |
+
+**The descriptor route is confirmed end to end against a live runtime.** That was the central
+architectural bet and it holds.
+
+### 10b.1 The calibration converged — on the wrong width
+
+`FieldDescCalibration` derived `m_dwOffset` as bits `[0,28)` at `+12`. CoreCLR's actual layout is
+`m_dwOffset : 27` then `m_type : 5`. **One bit too wide**, swallowing the low bit of `m_type`.
+
+Measured cost: **7,234 of 23,235 instance fields (31.1%) unreadable** — every non-enum struct
+field, every `double`, every unsigned integer. Any field with an odd `m_type` has bit 27 set, so
+the decode returns `offset + 0x8000000`.
+
+**Why the search did not catch it is the real lesson.** All eight published `System.Exception`
+anchors have *even* `m_type` (CLASS=18, I4=8), so bit 27 is zero in every sample and widths 27 and
+28 reproduce all eight identically. **The anchor set cannot distinguish them.**
+
+> **An anchor set can be insufficient in a way that is invisible from the anchors themselves.**
+> Convergence on a unique candidate proved only that the samples could not tell the difference —
+> not that the answer was right. A bit that is zero across every sample is *absence of evidence*,
+> not evidence the bit belongs to the field, and claiming it is the unsafe direction.
+
+**The root defect** was that the width search kept the *last* matching width per position and
+emitted a single tuple, so 27 and 28 were never two candidates to refuse between — they were
+silently merged into "28". The ambiguity rule had nothing to fire on.
+
+**"Prefer the narrowest" is the wrong fix, and would have been worse than the bug.** An earlier
+revision of this section recommended it. The anchors span offsets 0..100, so the *narrowest*
+matching width is **7 bits** — every field past offset 127 would decode to `real & 0x7F`: a small,
+plausible number comfortably inside `BaseSize`, which the guard cannot catch. That trades a loud
+31% loss for silent corruption of every large object. **Neither direction is derivable from eight
+even-`m_type` samples.**
+
+The fix that works is a **second constraint from real target data**: walk a corpus of real
+`FieldDesc` rows from a module's own type map and count `BaseSize` violations. Take the widest
+width with zero violations — which guards the narrow end, since a truncating width would otherwise
+win — and accept it only if the next bit up is *demonstrably* not ours (excluded by an anchor,
+overflowing `BaseSize` in the corpus, or past the word edge). If neither anchors nor real data can
+separate the two, refuse. **The boundary is observed, never assumed**, and the constant `27`
+appears nowhere in the implementation.
+
+Measured after the fix: **31.1% unreadable → 0%.**
+
+### 10b.2 What held
+
+**The failure was fail-safe.** `RuntimeFieldLayoutSource`'s `BaseSize` guard caught 8/8 broken
+fields, and `offset >= 0x8000000` guarantees it always will. Fields went *missing*; none came back
+**wrong**. That is the property §6.4 was designed around, tested against a real defect rather than
+a hypothetical one.
+
+**And the end-to-end comparison got lucky.** 90/90 agreement was real, but the reference reader
+only surfaces *scalar* fields — so no struct field was ever in the comparison set. The bug was
+found by an independent audit walking every `FieldDesc`, not by the agreement test. A passing
+comparison bounded by the weaker tool's coverage is not the reassurance it appears to be.
+
+---
+
+## 12.7 The ABI grid ran — measured offsets across two engine versions
+
+§8.9 proposed manufacturing the compat matrix from stock export templates, and §8.6 made publishing
+`Godot.External` conditional on the calibrator solving a layout it had never seen. Both were run
+for real against Godot 4.5-stable and 4.3-stable.
+
+### The gate is met
+
+`4.3-release-single-gdscript` and `4.3-debug-single-gdscript` each scored **12/15 on the first
+attempt**, with `calibration.unaided` green and **no 4.3 profile in existence**. Every derived
+offset was verified against the authored scene — sizes, positions, scales, anchor offsets,
+visibility, all 20 `StringName`s, child order, parent round-trip.
+
+**The calibrator derives layouts it has never seen.** That is the claim §8.9 said was worth
+publishing, demonstrated rather than argued.
+
+### Measured offsets
+
+Derived independently by both bindings, which agreed exactly:
+
+| Field | 4.5 release | 4.3 release | 4.5 debug | 4.3 debug |
+| --- | --- | --- | --- | --- |
+| `node.parent` | `0x128` | `0x128` | `0x130` | `0x130` |
+| `node.childListHead` | `0x148` | `0x150` | `0x150` | `0x158` |
+| `node.name` | `0x1c0` | `0x1d0` | `0x1c8` | `0x1d8` |
+| `canvasItem.visible` | `0x370` | `0x418` | `0x378` | `0x420` |
+| `control.offset` | `0x470` | `0x4d8` | `0x478` | `0x4e0` |
+| `control.scale` | `0x4a8` | `0x508` | `0x4b0` | `0x510` |
+| `control.position` | `0x4b8` | `0x518` | `0x4c0` | `0x520` |
+| `control.size` | `0x4c0` | `0x520` | `0x4c8` | `0x528` |
+| `childList.next` / `.node` | `0x0` / `0x18` | `0x0` / `0x18` | `0x0` / `0x18` | `0x0` / `0x18` |
+
+Two structural facts fall out:
+
+- **Debug is release + `0x8`, uniformly** — every field, both versions. The §4.6 debug column's
+  irregularity was error, not engine behaviour.
+- **4.3 → 4.5 is not a uniform shift.** `node.parent` unchanged, child-list head `−8`, name
+  `−0x10`, and the whole `Control` block `−0x60` (`visible` `−0xa8`, `offset` `−0x68`). A
+  per-version table is unavoidable; calibration is what makes that survivable.
+
+### Two cross-checks worth more than the table
+
+**§4.6's release column is confirmed 10/10 — and the "modified engine" caveat is retired.** The
+grid derived those offsets from scratch on a **stock** 4.5 template, and they match the values
+recovered from the shipped game. Every prior section warning that StS2 runs a *modified* Godot and
+so upstream layouts may not apply was right to be cautious, but for the `Control` block the fork's
+layout **is** the stock layout.
+
+**§4.6's debug column is contradicted 8/13**, exactly as it suspected of itself — see the
+correction there. A later run gave a **third** independent confirmation: the harness's
+`profile.agreement` check fails on both 4.5-debug cells, and the derived values preserve the
+release field ordering while the shipped debug column does not.
+
+### Reproducibility
+
+The grid was then re-run **three times at one attempt per cell** — 24 cell-runs — after fixing a
+nondeterminism in the calibrator's root location. Results:
+
+- **Zero offset disagreements** across 40 result files spanning six full grid runs. All 32 table
+  entries confirmed on every cell, every run, with zero run-to-run drift. The measured offsets are
+  reproducible, not a lucky sample — which is the claim that matters, since a calibrator that
+  derives a *different* answer each run would be useless regardless of whether any single answer
+  was right.
+- `4.5-release-single-dotnet` reached **17/17 on three consecutive runs** — the first cell to score
+  full marks reproducibly.
+- **But 5 of 8 cells still flip between runs**, so the matrix as a whole is not yet evidence. One
+  cell scored 16/16 in a single run out of three; that number is not quotable and was not quoted.
+  The remaining instability is concentrated in two derivations (`canvasItem.visible`, and text
+  offsets that are found per-node rather than per-class) rather than being spread across the ABI
+  work.
+- A new binding-dependent fact fell out: `scriptInstance.ownerBackref` is `0x8` on .NET cells and
+  `0x10` on GDScript cells, stable across all runs. It appears in no profile yet. This is a
+  *per-binding* fact, not a per-version one — a GDScript instance and a C# instance are different
+  C++ classes implementing `ScriptInstance`, so the owner pointer need not sit in the same place.
+
+**Two traps in reading the matrix, both worth knowing before quoting a number:**
+
+- **Score stability is not check stability.** One cell held a constant 14/15 across three runs while
+  the *failing check changed* underneath it — `semantic.visible` in one run, `strings.text.rich` in
+  the next two. A stable score can hide two alternating defects.
+- **`profile.agreement` can be passed by deriving *less*.** One cell passed "9/9 offsets match" in
+  two runs and failed "1/11 disagree" in the third — the only difference being that the third run
+  managed to derive two *more* offsets. The compared-count varies per run, so a green
+  `profile.agreement` is weaker evidence than it reads, and a cell that derives nothing passes it
+  trivially.
+- **Zero root-location failures**, against a prior regime of roughly 2-in-5 success on one cell and
+  14/14 failures on another. The harness's retry workaround was deleted as a result.
+- The managed bridge (`Probe.Instance` → `NativePtr` → walk root, plus the reverse
+  `ScriptInstance` → GCHandle chain) passes on **all four** .NET cells.
+
+**A retry loop that hides nondeterminism is worse than a red cell.** The harness had grown one to
+work around the defect, disclosed in every report row. Fixing the cause and deleting the workaround
+is what makes the matrix mean anything — a green obtained on the sixth attempt is not the same
+claim as a green obtained on the first.
+
+### Harness defects found by running it
+
+The harness had only ever driven a mock. Five real bugs surfaced, all fixed without weakening a
+check:
+
+1. **A .NET export silently produced a broken game.** Godot's exporter needs a `.sln`, which
+   `--build-solutions` does not create headless. It logged ERROR, **exited 0**, and wrote a valid
+   native `grid.exe` with no managed payload — which then died with `0xC0000005`. "The exe exists"
+   is not success.
+2. **The ground truth was wrong about the tree.** `RichTextLabel` adds an internal
+   `@VScrollBar@2` child that `.tscn` parsing and `get_children()` both hide — but a memory walk
+   cannot. Asserting 20 nodes while the walk found 21 did not merely fail the cell: it made the
+   *correct* layout unacceptable, so the search settled on an unrelated `SelfList` chain that
+   threads every node and crashed the driver.
+3. **The scene could not separate the parent pointer.** Godot caches it three times
+   (`Node::data.parent`, `CanvasItem::parent_item`, `Control::data.parent_control`), and in an
+   all-`Control` tree all three are identical for every pair. Fixed by making one sibling a bare
+   `Node`.
+4. **net8.0 exports were unmeasurable by construction** — the bundled .NET 8 runtime exposes no
+   readable `DotNetRuntimeContractDescriptor`, so the managed bridge could never be tested.
+5. `build.ps1` must stay ASCII — PS 5.1 reads it as ANSI and an em dash is a parse error.
 
 ---
 
@@ -1501,8 +2086,23 @@ managed object  0x1a974c6c240  (MegaCrit.Sts2.Core.Nodes.NGame)
 Real identifiers were then read straight out of the `#Strings` heap. **Type and field names are
 reachable with no scry and no ClrMD** — just the descriptor plus the documented ECMA-335 layout.
 
+**Two validation gotchas found while implementing this:**
+
+- **The stream sizes do not sum to the metadata size, and that is correct.** The five streams total
+  4,967,816 against a stated 4,967,924 — a 108-byte gap, which is the metadata *root header*
+  (signature, version block, stream header table) and belongs to no stream. Bound each stream
+  against the blob independently; summing sizes as a consistency check will report a false error.
+- **Validate the CLI header's own `cb` against the ECMA-335 floor of 72 bytes** (observed live:
+  `cb=72`), not just the data-directory entry. A garbage `Module.Base` otherwise yields a
+  plausible-looking RVA/size pair that survives naive checks.
+
 This means the *entire* pipeline (§6.2) has a dependency-free path: descriptor for CLR struct
 offsets, ECMA-335 metadata for names, raw reads for values.
+
+**One step this section glosses over.** Going from a `MethodTable` to its TypeDef token — which is
+what makes the metadata lookup possible at all — has no published field: the descriptor exposes no
+token on `MethodTable`. The working route is to **invert `Module.TypeDefToMethodTableMap`** in one
+bulk read per module. Cheap and process-tier cacheable, but it is a step, not a given.
 
 **A trap worth recording:** JavaScript bitwise operators truncate to 32-bit **signed**, so
 `ptr & ~0x7` corrupts any 64-bit pointer. Use arithmetic (`p - (p % 8)`) or `BigInt`. This
@@ -1554,11 +2154,18 @@ the offsets can instead be *discovered at connect* from independently-known grou
 
 Method — no prior knowledge of any offset, only structural and semantic anchors:
 
-| Offset | Anchor used | Derived | Expected | |
+| Offset | Anchor used | Derived | Expected | Samples needed |
 | --- | --- | --- | --- | --- |
-| child-list head | the only pointer `p` where `*(p+0x18)` is a known child | `0x148` | `0x148` | **MATCH** |
-| parent | the only slot in a child equal to the parent's own pointer | `0x128` | `0x128` | **MATCH** |
-| size | scan for the design viewport `1920×1080` as an adjacent float pair | `0x4c0` | `0x4c0` | **FOUND** |
+| child-list head | the only pointer `p` where `*(p+0x18)` is a known child | `0x148` | `0x148` | **1 — unique** |
+| parent | the only slot in a child equal to the parent's own pointer | `0x128` | `0x128` | **1 — unique** |
+| size | scan for an adjacent float pair matching a known Control size | `0x4c0` | `0x4c0` | **2 — AMBIGUOUS on one** |
+
+**Read that last row carefully — it is the design lesson, not a footnote.** The structural probes
+are uniquely determined by a single sample because pointer identity is a strong constraint.
+Semantic probes are **not**: a scan of a `200×50` control alone yields four candidates
+(`0x4c0`, `0x4c8`, `0x4d4`, `0x4f4`). Only intersecting across controls of *different* sizes
+collapses it to one. An API that lets a caller derive a semantic offset from one sample is wrong
+by construction.
 
 The naive size scan on a *second* control (200×50) returned four candidates
 (`0x4c0`, `0x4c8`, `0x4d4`, `0x4f4`) — but intersecting the candidate sets across two controls of
@@ -1589,3 +2196,438 @@ version-agnostic by construction, but that is an argument, not a measurement.
 
 Re-run after any game update: the probes are in
 [`docs/reference/probes/`](reference/probes/).
+
+---
+
+## 13. Resolving offsets by NAME — the getter-disassembly route
+
+**Status: validated 3/3 against the shipped export templates. This is the most significant finding
+in the project and it changes what the calibrator has to do.**
+
+Everything up to here recovers struct layout by archaeology: scan for candidates, eliminate by
+structural rules, publish when exactly one survives. §4.6b established that scry never attempted
+this. What follows establishes that we may not have to either — for most fields.
+
+### 13.1 ClassDB does not store offsets. But the getter does.
+
+`ClassDB::ClassInfo` (`class_db.h:102-151`) carries `property_list`, `property_map` and
+`property_setget`. `PropertySetGet` (`class_db.h:93-100`) is
+`{int index; StringName setter; StringName getter; MethodBind *_setptr; MethodBind *_getptr;
+Variant::Type type;}` — **no offset field anywhere**, and `ClassDB::add_property`
+(`class_db.cpp:1458-1512`) never computes one. GDExtension's registration is likewise name-based.
+`ClassDB::native_structs` does carry real field layouts, but only for a handful of POD structs
+(`AudioFrame` and similar), never for `Object` descendants. So the obvious hope — *ask the engine
+where `text` lives* — is genuinely unavailable, and §8.2's caveat was right.
+
+Two properties rescue it, both verified unguarded by `#ifdef` and therefore **present in release
+export templates**:
+
+- `property_list` / `property_map` / `property_setget` sit outside the `DEBUG_ENABLED` block
+  (`class_db.h:122-130`).
+- `_getptr` is cached **eagerly at registration** (`class_db.cpp:1506-1507`), so a `MethodBind*` is
+  reachable with no name lookup.
+
+And on Windows the `MethodBind` holds a **plain code address**: `platform/windows/detect.py:363`
+defines `TYPED_METHOD_BIND`, so `MethodBindTRC<T,R,P...>` (`method_bind.h:569-570`) stores a
+pointer-to-member typed on the real class — and because Godot's `Object` hierarchy is
+single-inheritance with no virtual bases, that is laid out as 8 bytes of function pointer. A scan
+of the 4.5 release `.text` found **zero vcall thunks**: no property getter is dispatched virtually.
+
+> **Correction — the official templates are MinGW-GCC, not MSVC.**
+> `godot-build-scripts/build-windows/build.sh` builds the official x86_64/x86_32 templates with
+> `use_mingw=yes` (arm64 with llvm-mingw), and `build-containers/Dockerfile.windows` installs
+> `mingw64-gcc-c++`. **No MSVC anywhere in the official pipeline.** The decoding results in §13.2 were
+> validated empirically against the real shipped templates and are unaffected — but any reasoning
+> here that appealed to *MSVC's* pointer-to-member layout was appealing to the wrong toolchain.
+> The load-bearing facts survive independently: the single-inheritance hierarchy makes the
+> pointer-to-member a plain code address under either ABI, and the zero-vcall-thunk scan is a
+> measurement of the actual binary. The consequence that does change is RTTI — see §13.9, where the
+> right ABI is **Itanium**, not MSVC `RTTICompleteObjectLocator`.
+
+So: the engine tells us where the getter is, and the getter's first instruction tells us the offset.
+
+### 13.2 Measured, on the real binaries
+
+| Getter | RVA | Decoded | Ground truth | Name attribution |
+| --- | --- | --- | --- | --- |
+| `CanvasItem::is_visible` (release) | `0x139f520` | `0x370` | `0x370` OK | **proven** — `"is_visible"` |
+| `Label::get_text` | `0x1483bb0` | `0x800` | `0x800` OK | *unproven* — see below |
+| `RichTextLabel::get_text` | `0x1663590` | `0xa78` | `0xa78` OK | *unproven* — see below |
+
+The `visible` stub is eight bytes: `movzx eax, byte ptr [rcx+0x370]; ret`. Its one address-taken
+reference sits at RVA `0x13aaa90`, inside the `_bind_methods` block that materialises the string
+`"is_visible"` — so this row is confirmed **by name**, not merely by matching a number we already
+believed.
+
+Two codegen shapes appear and both decode:
+
+```
+Label::get_text          push rbx / sub rsp,0x20 / mov qword[rcx],0 / mov rbx,rcx
+                         mov rcx, qword ptr [rdx + 0x800]     <- hidden sret ptr, this in RDX
+RichTextLabel::get_text  mov rax, qword ptr [rdx + 0xa78]     <- instruction #1
+```
+
+Decoder rule: *the memory operand based on the `this` register (RCX for by-value returns, RDX when
+the return needs a hidden sret pointer) with displacement ≥ 0x20, requiring exactly **one distinct
+`(register, displacement)` pair** before the first `call`/`ret`.*
+
+> **Three corrections found while implementing this — the first draft of §13 was wrong.**
+>
+> **1. "Exactly one this-relative memory operand" refuses one of the 3/3.**
+> `RichTextLabel::get_text` loads `[rdx+0xa78]` **twice** — once at instruction #1 and again after a
+> `cmpxchg` loop. The literal rule rejects it. The rule that works counts **distinct
+> `(register, displacement)` pairs**, which preserves the ambiguity guarantee while accepting
+> repeated loads of the same field.
+>
+> **2. The `0x3c0` debug row was a coincidence and has been deleted.** It is real —
+> `movzx eax, byte [rcx+0x3c0]; ret` at RVA `0x18181a0` — but its address-taken reference sits in a
+> `_bind_methods` block materialising **`"get_debug_use_custom"`**, an unrelated class. It is not
+> `CanvasItem::visible`. And `movzx eax, byte [rcx+0x378]; ret` does not exist in the debug template
+> at all, so the getter route **abstains** on debug `visible` rather than supporting either value.
+> The lesson is the whole argument for §13.4's `ClassDB` walk: **an offset without a name attached to
+> it is not evidence.** Matching a number we already believed is confirmation bias with extra steps.
+>
+> **3. `Label::get_text` and `RichTextLabel::get_text` are attributed by offset, not by name.**
+> RVA `0x1483bb0` is *a* `String` getter at `+0x800`, but its `_bind_methods` neighbourhood shows
+> `"is_shortcut_feedback"` / `"get_shortcut"`, so the class attribution is not provable offline.
+> Both rows agree with §4.6's recorded values, which is worth something — but they are not proof
+> about `Label` specifically until the `ClassDB` walk runs live.
+>
+> **Register liveness matters too**, and the prototype lacked it: a body that does
+> `mov rcx, [rcx+0x178]` before `[rcx+0x918]` is reading a displacement into a *different object*.
+> The shipped decoder retires RCX/RDX on any write, with sub-register writes normalised.
+
+Run over a whole `.text` (1.09M candidate positions, 4.5 release), the shipped decoder decodes 1.1%
+and refuses 98.9% — 81.3% `NoReturnInWindow`, 11.6% `NoThisRelativeAccess`, 4.5% `UndecodableBody`,
+0.6% `AmbiguousAccesses`. That refusal rate is the design working, not a shortfall.
+
+**Optimization does not erase these.** The getter's address is taken and stored in the `MethodBind`,
+so the out-of-line body must be emitted. Census of the release template: 1,072 `bool` getter stubs,
+1,704 `int32`, 770 `float`, 459 pointer, 227 COW/String — and the **debug** template's counts are
+nearly identical (1,057 / 1,602 / 764 / 433 / 220). Optimization level is not the variable.
+`/OPT:ICF` folding is harmless: folded getters share an offset by definition.
+
+### 13.3 Coverage — and the 15% that must be refused
+
+Classifying all 3,951 `ADD_PROPERTY` sites in the 4.5 source by getter body:
+
+| Shape | Share | Decodable |
+| --- | --- | --- |
+| `return field;` / `return (T)field;` / `return field.sub;` | ~84.5% | yes |
+| computed / multi-statement (`Engine::get_time_scale`, `InputEvent::is_pressed`) | 11.2% | **refuse** |
+| delegating (`return f(...)`) | 4.4% | **refuse** |
+
+(669 header-inline getters were not locatable by the parser; those skew *more* trivial, so 84.5% is
+a floor.) The refusal rule preserves the project's discipline: require a `ret` within ~0x40 bytes and
+**exactly one distinct `(register, displacement)` pair** among this-relative accesses before the
+first `call`/`ret`. Anything else publishes nothing. (Distinct *pairs*, not distinct *accesses* — see
+correction 1 above.)
+
+Because the hierarchy is single-inheritance with no virtual bases, `this` for `CanvasItem` equals
+`this` for `Label`, so a decoded displacement is directly usable from the `Object*`.
+
+### 13.4 What still needs archaeology — two anchors, not every field
+
+- **`ObjectDB::object_slots`** (`ObjectSlot` = 16 bytes, `{validator:39, next_free:24, is_ref:1,
+  Object*}`): from one known `Object*` and its `_instance_id` (low 24 bits = slot index), the array
+  base is `&slot - index*16`. Exact and self-validating — no scanning heuristic — and it removes the
+  need to walk the scene tree from a root.
+- **`ClassDB::classes`**, a static `HashMap` in `.bss`. The useful property: `HashMapElement` is a
+  **doubly-linked list** (`hash_map.h`), so finding *one* element enumerates every class without ever
+  locating the map root. Chain: known `Object` -> `_class_name_ptr` (`object.h:648`) -> static
+  `StringName` -> interned `_Data*` -> the element whose key holds that pointer -> walk `next`/`prev`.
+
+> **The `ClassDB` chain is inferred from verified layouts, not yet run against a live process.**
+> The getter decoding in §13.2 *is* measured. Do not conflate the two.
+
+### 13.5 GDScript needs no disassembly at all
+
+`Object::script_instance` (`object.h:644`) -> `GDScriptInstance::script` -> `GDScript::member_indices`
+(`gdscript.h:100`, `HashMap<StringName, MemberInfo>`, `MemberInfo.index` first) ->
+`GDScriptInstance::members` (`Vector<Variant>`, stride 24 on a float build). Unguarded by any
+`#ifdef`, and confirmed as the actual runtime resolution path (`gdscript.cpp:1755-1765` for `get`,
+`1682-1702` for `set`). The derived class's map already contains base-class members in one flat index
+space, so no base walk is needed. Caveat, checkable from data: if `MemberInfo::getter` is non-empty,
+`members[index]` is a backing slot that may be stale.
+
+C# fields are **not** covered — that needs CoreCLR metadata walking, which is §5's problem, not this
+one.
+
+### 13.6 Why this matters most as a cross-check
+
+The calibrator currently publishes when exactly one candidate survives bracketing. **Two unrelated
+derivations agreeing is a far stronger criterion**, and it is available essentially for free: the
+bracket proposes, the getter disassembly confirms.
+
+A concrete test of the idea's worth, and it survived implementation: §4.6's table records scry's
+`Label.text` debug offset as `0x848`. In the 4.5 debug template there is **no `String`/sret-shaped
+getter loading `[rdx+0x848]` — zero sites, any opcode.** The byte-for-byte structural twin of the
+release `+0x800` getter sits at RVA `0x11bc100` and loads **`+0x808`**. And `0xb18` — §4.6's
+`RichTextLabel` debug value — decodes from **nothing at all** anywhere in that template.
+
+So the getter route contradicts §4.6's debug column and independently lands on §12.7's measured
+*"debug is release + 8"*. Three unrelated methods now agree that the debug column is wrong: a live
+grid derivation, a delta analysis, and static getter decoding.
+
+Carry the §13.2 caveat with it, though: this corroborates the **uniform-shift rule**, not a claim
+about `Label` specifically, because the class attribution of that getter is not provable offline.
+
+The API reflects the discipline: `OffsetCrossCheck.Compare(getterBody, bracketedOffset)` carries a
+value **only** on `Agree` — a disagreement publishes neither side rather than picking a winner.
+
+### 13.7 Fragility — version gates, not assumptions
+
+- **4.6/master already breaks this**: `ClassInfo::property_setget` becomes `AHashMap`. Different walker.
+- `sizeof(MethodBind)` moves with `DEBUG_ENABLED` (`arg_names` is debug-only) — **probe the first few
+  qwords for the one landing in the main module's `.text`** rather than hardcoding it. Self-validating.
+- `HashMap` went 48 -> 40 bytes between 4.3 and 4.5.
+- `StringName::_Data` dropped `cname`/`idx` in 4.5; a 4.3 reader must check `cname` first.
+- **Windows-specific**, but *not* MSVC-specific — see the correction in §13.1. The official templates
+  are MinGW-GCC, which still uses the Microsoft x64 calling convention (RCX/RDX), which is why the
+  decoder works on them. **Linux** templates use the System V convention (RDI) and the Itanium
+  `{ptr, adj}` pointer-to-member pair. Decodable, but a second decoder.
+
+### 13.8 Prior art: nobody has published this
+
+`Zolt-Dump` is an **injected** in-process dumper (proxy DLL -> named pipe -> external UI) and makes no
+external claim at all; its own `ue-to-godot-mapping.md` rates property offsets *"Hard — Godot uses
+getter/setter, not offsets"* and its `dev-log.md` calls them unsolved. Its offsets come from
+empirical layout probing, not metadata. The one real external precedent is **GDDumper** (Cheat Engine
+Lua) — genuine external name-to-offset, but **only** for GDScript `member_indices`, and only after a
+human hand-derives the engine layout per build. Godot's own remote debugger is name-based and
+external but requires a **debug** export template.
+
+The `ClassDB` -> `MethodBind` -> disassemble-the-getter route appears to be unpublished.
+
+*(Read only from public READMEs, docs and issues. Zolt-Dump is GPL-3.0 and archived; no source was
+read — see §9.)*
+
+### 13.9 Per-node class identity — the vtable, not `_class_name_ptr`
+
+Knowing a node's real class turns out to be the load-bearing fact for reading text safely: a valid
+Godot `String` at a plausible offset is indistinguishable from the *right* String unless you know
+whether the node could be a `Label` at all (§13.6). The grid measured that directly — with class
+gating, zero phantoms; without it, every phantom in the series.
+
+**`Object::_class_name_ptr` is a dead end on 4.2, 4.3 and 4.4 — the field exists and is always null.**
+This was measured before it was explained: 4.5 derived it 12/12 deterministically with zero wrong
+class names, 4.3 failed 12/12, and a `cname` fallback, a relaxed threshold and a corroboration check
+all produced *no observable change*. The source says why:
+
+```cpp
+// core/object/object.cpp:210-215, 4.3-stable
+void Object::_postinitialize() {
+    _class_name_ptr = _get_class_namev();
+    _initialize_classv();
+    _class_name_ptr = nullptr;   // destroyed on the next line
+    notification(NOTIFICATION_POSTINITIALIZE);
+}
+```
+
+`_predelete()` also writes null, and nothing else ever writes it, so the slot reads 0 for the entire
+observable lifetime of every node. Fixed by [PR #105099](https://github.com/godotengine/godot/pull/105099)
+(merged 2025-04-08), **milestone 4.5 only** — the reset was deleted and the logic moved to
+`Object::_initialize()`. Verified **not** cherry-picked to 4.4.x against 4.4.1-stable.
+
+| Version | Field present | Nulled in postinit | Live value |
+| --- | --- | --- | --- |
+| 4.2 / 4.3 / 4.4 / 4.4.1 | yes | yes | **always 0** |
+| 4.5 | yes | **no** | populated |
+
+So treat a zero on 4.2–4.4 as **structurally unavailable**, not as a calibration failure — and expect
+4.4 cells to fail identically if the grid adds them. Nothing else in 4.3 carries per-instance class
+identity: `get_class()` is a virtual returning a literal, `_get_class_namev()` returns a per-class
+*static*, `is_class_ptr()` compares a static's address. All virtuals or statics, reachable only
+through the vtable, never from instance bytes.
+
+**The replacement works on every version, including 4.5, and needs no calibration at all:**
+
+```
+vptr      = u64[node + 0]        // Object has no base and is polymorphic -> vptr at offset 0
+offs_top  = i64[vptr - 16]       // must be 0 for a primary-base object; use as a validity check
+tinfo     = u64[vptr -  8]       // std::type_info*
+name_ptr  = u64[tinfo + 8]       // libstdc++ type_info::__name
+name      = cstring(name_ptr)    // "5Label" -> strip optional leading '*', read the decimal
+                                 // length prefix, take that many chars
+```
+
+Every offset is an ABI constant. **Group by vptr first** — it partitions the scene into exact
+class-equivalence sets for free — then resolve the name once per *distinct vptr* (a few dozen per
+scene), not once per node. The grouping alone solves the single-instance problem: the subset rule
+that guards text publication is vacuous when a class has exactly one instance, and exact equivalence
+sets restore it without needing a name at all.
+
+Inheritance shape verified in 4.3 source: `Object` has no bases and is polymorphic
+(`virtual ~Object()`), then `Node : Object`, `CanvasItem : Node`, `Control : CanvasItem`,
+`Label : Control`. Single inheritance throughout, no virtual bases. `GDCLASS` structurally forbids a
+second base, and Godot's own `ObjectDB`/`void*` round-tripping depends on the `Object` subobject
+sitting at offset 0.
+
+**RTTI is enabled and the ABI is Itanium.** No `-fno-rtti` or `/GR-` anywhere in 4.3's `SConstruct`,
+`methods.py`, `platform_methods.py` or `platform/windows/detect.py`; the MSVC path explicitly adds
+`/GR` and the MinGW path leaves GCC's RTTI-on default. LTO (`production=yes`) does not merge vtables
+of distinct classes, and stripping does not remove typeinfo — both non-issues.
+
+Keep a one-time **ABI probe** so a custom MSVC-built template degrades instead of emitting garbage:
+Itanium `vptr-8` points at a type_info whose first qword is a vtable in a read-only section, whereas
+MSVC `vptr-8` points at a `RTTICompleteObjectLocator` whose first dword is 0 or 1. Detect, then either
+decode `.?AVLabel@@` at `TypeDescriptor+0x10` or **withhold**.
+
+Failure modes to gate rather than assume: a template built `-fno-rtti` (fall back to disassembling
+`_get_class_namev` — `GDCLASS` at 4.3 `object.h:413-419` compiles to a `lea` on the per-class static
+followed by a null test — but hold that in reserve, it is strictly more fragile); GDExtension nodes,
+where RTTI reports the C++ wrapper rather than `_extension->class_name`; and namespaced classes
+arriving as `N…E`, which Godot's global-namespace node classes avoid but which must be refused
+explicitly rather than mis-parsed. Script-attached nodes correctly report their engine base class,
+which is exactly what is wanted for telling a `Label` from a `Panel`.
+
+**`ClassDB` cannot supply per-instance identity** and should not be pursued for it: it is keyed by
+`StringName` and stores no vtable, no instance pointer and no per-instance handle. It remains useful
+as a **validator** — the element walk of §13.4 yields the authoritative name set, and any
+RTTI-derived name outside that set is a script, GDExtension or engine-internal case worth flagging.
+
+> ### The fixture agreed with the hypothesis instead of with the target
+>
+> Worth recording as method, because it cost three rounds. The synthetic fixture for class-name
+> calibration wrote a **live, populated `_class_name_ptr`** — so every unit test passed, and each
+> successive relaxation (a `cname` fallback, a 75% threshold, name corroboration) was validated
+> against behaviour the engine *never exhibits on 4.2–4.4*. The grid kept reporting 12/12 withheld
+> and the fixture kept reporting green, and the contradiction read as "the derivation needs more
+> tuning" rather than as "the fixture is lying".
+>
+> The tell was available the whole time and was misread: **three independent relaxations produced no
+> observable change at all.** A mechanism that is merely over-constrained responds to relaxation.
+> One that responds to nothing is not firing — and a fixture built from the same assumption as the
+> code cannot reveal that, because it encodes the assumption twice and calls the agreement
+> confirmation.
+>
+> Practical rule for this project: when a fixture and the grid disagree, **the grid is the target and
+> the fixture is a hypothesis about the target.** Fix the fixture from measured bytes before tuning
+> the code that reads them. This is the same lesson as §12.7's debug column — a number believed
+> because two sources agreed, where one source was derived from the other.
+>
+> **It recurred immediately, which is what makes it a pattern rather than an incident.** A bracket
+> clause was added requiring the dword at `Label::text+0x14` to be zero. Live memory says that dword
+> is a member past `xl_text` holding `0x39`/`0x42`/`0x51`/`0x5a`/`0x79`/`0x61461120`/`0xff8700a2` —
+> and *varying between the two Labels in a single process*. The unit fixture wrote **zero** there, so
+> the tests confirmed the false clause, and the same edit deleted a clause that was **true**
+> (`xl_text._ptr == text._ptr`, measured bit-identical on every Label under both bindings) on the
+> strength of an inference about how .NET routes `set_text`. A guess replaced a fact, and the fixture
+> ratified the swap.
+>
+> The generalisation worth keeping: **a fixture authored from a premise cannot falsify that premise.**
+> Anywhere a test's input is written by the same reasoning as the code under test, the test measures
+> self-consistency and nothing else. Fixture bytes for layout-sensitive code should be lifted from a
+> real target, or deliberately randomised in the fields the code does *not* claim to depend on —
+> which is exactly what caught this one when `0x5a` replaced the zero.
+>
+> Tally so far, all the same shape: the padding equalities that made `visible` undiscoverable
+> (§13, three rounds), the always-null `_class_name_ptr` (three rounds), and this. **Every one was a
+> clause asserting that some byte is zero.** C++ does not zero what you did not write.
+>
+> **And the same failure hit the verification method itself.** Every grid series pinned each cell's
+> `grid.exe` SHA-256 to prove the targets had not been rebuilt between runs. That check was sound
+> in form and empty in content: **`grid.exe` is a byte-identical copy of the stock Godot export
+> template** — verified by hashing it against
+> `%APPDATA%\Godot\export_templates\4.5.stable\windows_release_x86_64.exe` — because the scene ships
+> in `grid.pck`, not in the executable. So the pin proved only that the *engine* was unchanged, which
+> was never in doubt, and would have happily reported "targets not rebuilt" across an edited scene.
+> Comparability is carried by **`grid.pck`** and `cell.json.sceneSha256`; pin those.
+>
+> Same lesson one level up: a check that never varies is not thereby passing. It may not be
+> measuring anything.
+>
+> **The subtlest instance had no premise written into it at all.** A test for a read-retry change
+> derived its expected attempt count *from the code, at runtime*, and then asserted the code matched
+> it. That reads like rigour — no magic number, adapts to refactors — and is the exact opposite: it
+> agrees with whatever the code does, including whatever the code does wrong. It passed with the
+> retry removed. The fixed version pins the measured count (6) and separately asserts the strategy
+> still makes exactly that many, so a change to the read path breaks loudly instead of silently
+> re-calibrating.
+>
+> **The general tell across all four: the test never disagrees with anything.** A hardcoded premise
+> at least fails when the premise is wrong; a self-derived one cannot fail at all. The only defence
+> that has actually worked here is the crude one — revert the change and confirm the test goes red.
+> Nothing else in this project has reliably caught a test that was measuring itself.
+
+### 13.10 `ownerBackref` is per implementing class, not per binding
+
+A small fact that was one edit away from being encoded wrongly, and the error would have been
+invisible on this grid.
+
+The grid measured `ScriptInstance`'s owner back-reference at `0x8` on every .NET cell and `0x10` on
+every GDScript cell — 19 of 24 cell-runs, zero contradictions. The obvious reading is that the offset
+is a property of the *build*, and the obvious fix is to split the profile table by binding.
+
+**That model is false.** `CSharpInstance` and `GDScriptInstance` are unrelated C++ classes
+implementing one interface; the back-reference is a member of whichever class actually instantiated,
+not of the engine object. And a mono export template runs `.gd` scripts perfectly well — so **a
+single process can hold nodes of both kinds at once**, and the correct offset differs *per node*.
+
+The grid only makes it look build-shaped because each cell's probe script happens to match its cell
+name. A table keyed on binding would have scored 24/24 here and been wrong on any real mixed game —
+the worst possible combination, since the harness would have certified the mistake.
+
+The correct key is the implementing class, read off the `ScriptInstance`'s own vtable by the same
+RTTI as §13.9:
+
+```json
+"scriptInstance.ownerBackref": { "CSharpInstance": "0x8", "GDScriptInstance": "0x10" }
+```
+
+A key the table cannot express for a given target is **not compared** rather than scored, and says so
+in the detail line, so the profile never reads as more complete than it is.
+
+Worth generalising: *"the axis along which my samples happen to vary"* is not the same as *"the axis
+the value actually depends on"*, and a fixture whose cells are stratified by build will make every
+per-node fact look per-build. Cf. §12.7's debug column, where a real relationship
+(`debug = release + 8`) was read out of a table that had no such rule in it.
+
+### 13.11 Checks that cannot fail — the failure family that cost the most
+
+Nearly every expensive mistake in this project was the same one, and it was never a wrong answer. It
+was a **check that had no way to come out other than the way it came out.** Collected here because
+the individual instances read as unrelated bugs and the pattern does not.
+
+| # | The check | Why it could not fail | Cost |
+| --- | --- | --- | --- |
+| 1 | Unit fixture for `_class_name_ptr` calibration | Fixture wrote a *populated* pointer — a state Godot 4.2–4.4 never reaches, since `_postinitialize` nulls it on the next line | 3 rounds |
+| 2 | Unit fixture for the `Label::text+0x14` bracket clause | Fixture wrote **zero** there; the live member holds `0x39`/`0x51`/`0x79`/… and varies between two Labels in one process | 3 rounds |
+| 3 | Read-retry test | Derived its expected attempt count **from the code at runtime**, then asserted the code matched it. Passed with the retry removed | 1 round |
+| 4 | `grid.exe` SHA pin, "targets not rebuilt" | `grid.exe` is a byte-identical copy of the stock export template; the scene ships in `grid.pck`. Would report "unchanged" across an edited scene | 8 series of false assurance |
+| 5 | `profile.agreement` on `scriptInstance.ownerBackref` | `loadProfiles` ran `parseOffset` over the per-class map, flattening it to `null`. The comparison logic was correct and **unreachable** | reported as a real disagreement |
+| 6 | Geometry checks on non-`CanvasItem` nodes | Filtered to `isControl` nodes, so the two bare `Node`s were never inspected | concealed a live defect through a **22/24 full-score** series |
+
+Two of these deserve their own emphasis.
+
+**#3 is the subtlest, because it looks like the good practice.** No magic number, survives refactors,
+adapts to the implementation — and it agrees with whatever the code does, *including whatever the
+code does wrong*. A hardcoded premise at least fails when the premise is wrong. A self-derived one
+cannot fail at all. The fix was to pin the measured constant and separately assert the strategy still
+produces it, so a change breaks loudly instead of silently re-calibrating.
+
+**#6 is the one to remember, because plausibility could never have saved it.** The fabricated
+readings were `size=[0,0] scale=[0,0] offset=[0,0,0,0]` — and **zeros pass every plausibility test
+there is**. `visible=true` on an object with no `CanvasItem` base is not reachable from any amount of
+value-checking. Only *identity* could reject it: the fix gates geometry on walking Itanium's
+`__si_class_type_info` → `__base_type` chain to ask whether the object is a `CanvasItem` at all.
+Note the shape of that too — the hierarchy is read **from the target**, not compared against a
+hardcoded list of Godot class names, because "this node is a `Node`" only implies "it has no
+`CanvasItem`" if you already assume Godot's hierarchy. That assumption would have been the same
+species as the neighbour clauses in §13.10.
+
+**The tell, in every case: the check never disagreed with anything.** Not "rarely" — never. A check
+whose output is constant across every input it has ever seen is not passing; it may not be measuring.
+Worth asking of any green check: *what input would make this red, and has anything like it ever been
+run?*
+
+**The only defence that has actually worked here is the crude one:** revert the change and confirm
+the test goes red. Every fix in the later rounds was validated that way, and it caught #2 and #3
+directly. Static reading of the test never did.
+
+A corollary that shaped a decision rather than a bug fix: the four 4.3 grid cells cap at 18/18 because
+`profiles.json` ships no 4.3 column, leaving every 4.3 offset uncorroborated. Transcribing the
+calibrator's own output into that column would raise the score to 19/19 and would be **anti-evidence**
+— `profile.agreement` would then pass by construction forever, a check that cannot fail, installed
+deliberately. The honest sources are the getter decoder (§13.2, independent of bracketing) or nothing.
+**The cap is information; removing it by fiat would destroy the information and keep the number.**
