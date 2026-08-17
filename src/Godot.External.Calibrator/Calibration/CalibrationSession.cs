@@ -14,6 +14,8 @@ public static class OffsetKeys
     /// <summary><c>Object::_class_name_ptr</c>. Not in any shipped profile; the harness ignores it.</summary>
     public const string ObjectClassName = "object.className";
     public const string CanvasItemVisible = "canvasItem.visible";
+    public const string ControlGlobalPosition = "control.globalPosition";
+    public const string ControlAnchor = "control.anchor";
     public const string ControlOffset = "control.offset";
     public const string ControlScale = "control.scale";
     public const string ControlPosition = "control.position";
@@ -63,6 +65,7 @@ public sealed class CalibrationSession
     private readonly Dictionary<string, int> _samples = [];
     private readonly Dictionary<string, IReadOnlyList<string>> _candidates = [];
     private readonly List<string> _notes = [];
+    private readonly Dictionary<string, string> _notDerived = [];
 
     /// <summary>
     /// Creates a session.
@@ -423,6 +426,33 @@ public sealed class CalibrationSession
         }
 
         DeriveVisible(scene, windows, byPath);
+
+        // Declared, not merely mentioned. A refusal stated in a note is still invisible to a
+        // comparison; stated here it is surfaced by name wherever a profile holds the key.
+        // F2: the harness now asserts anchors both ways — a bare Node may not report one, and a
+        // Control that DOES report one must report it correctly. Both assertions are currently
+        // vacuous, because this driver publishes the field on no node at all, and a trap armed for a
+        // driver that does not exist should not read as a tested one.
+        //
+        // Not derived, and deliberately: every route to it is a neighbour assertion of the kind that
+        // has now been wrong three times. anchor[4] sits immediately after offset[4] — reading it by
+        // adjacency is exactly the §4.6 trap the grid exists to catch. It could instead be SOLVED,
+        // since pos = offset[0..1] + anchor[0..1] * parent_size and all three of those are derived,
+        // and then located by intersecting the solved quads across the two differently-anchored
+        // controls. That is a real derivation and it is the right end state; it is not one to add in
+        // the same change as a correctness fix, and publishing a wrong quad would be the first
+        // absent-never-wrong violation in many rounds.
+        Decline(OffsetKeys.ControlAnchor,
+            "no route to it that is not a neighbour assertion — anchor[4] sits immediately after offset[4], which "
+            + "is the confusion the grid exists to catch. Solving it from pos = offset + anchor * parent_size and "
+            + "intersecting across the two differently-anchored controls is the honest derivation, and is not yet "
+            + "implemented");
+
+        Decline(OffsetKeys.ControlGlobalPosition,
+            "a cached field, not a computed transform — §4.6 settles from the disassembly that the accessor does "
+            + "two float reads and no arithmetic, and §12.3 watched it return [0,0] for controls with real "
+            + "on-screen positions. Global position is composed from local positions up the tree instead, so "
+            + "deriving this offset would only invite reading it.");
     }
 
     private void DerivePosition(WalkedScene scene, Dictionary<ulong, MemoryWindow> windows, int offsetBase)
@@ -968,13 +998,16 @@ public sealed class CalibrationSession
     {
         if (!_request.IsDotNetCell || _request.ManagedStatic is null)
         {
+            // A GDScript instance has no GCHandle at all — this is a genuine absence, not a gap.
+            Decline(OffsetKeys.ScriptInstanceGcHandle,
+                "this target's scripts are not .NET, and a GDScript ScriptInstance carries no GCHandle to locate");
             return null;
         }
 
         if (_managed is null)
         {
-            _notes.Add("bridge.managed: no managed probe was available for this run, so the CLR half of §4.6's "
-                     + "chain was not followed.");
+            Decline(OffsetKeys.ScriptInstanceGcHandle,
+                "no managed probe was available for this run, so the CLR half of §4.6's chain was not followed");
             return null;
         }
 
@@ -985,8 +1018,9 @@ public sealed class CalibrationSession
 
         if (chains.Count == 0)
         {
-            _notes.Add("bridge.managed: the root node exposed no ScriptInstance, so there is no route to a managed "
-                     + "object from the native side.");
+            Decline(OffsetKeys.ScriptInstanceGcHandle,
+                "the root node exposed no ScriptInstance, so there is no route to a managed object from the "
+                + "native side");
             return null;
         }
 
@@ -1056,8 +1090,9 @@ public sealed class CalibrationSession
             }
         }
 
-        _notes.Add($"bridge.managed: none of {chains.Count} candidate ScriptInstance chain(s) dereferenced to a "
-                 + $"managed object of type \"{_request.ManagedStatic.Type}\".");
+        Decline(OffsetKeys.ScriptInstanceGcHandle,
+            $"none of {chains.Count} candidate ScriptInstance chain(s) dereferenced to a managed object of type "
+            + $"\"{_request.ManagedStatic.Type}\", so there was no GCHandle slot to locate");
         return null;
     }
 
@@ -1243,6 +1278,13 @@ public sealed class CalibrationSession
 
     private void Record(string key, int offset) => _offsets[key] = offset;
 
+    /// <summary>Declares an offset deliberately not derived, with the reason.</summary>
+    private void Decline(string key, string reason)
+    {
+        _notDerived[key] = reason;
+        _notes.Add($"{key}: not derived — {reason}");
+    }
+
     private void Publish(string key, OffsetCandidates result, Dictionary<string, string>? evidence, string? evidenceText)
     {
         _candidates[key] = [.. result.Candidates.Select(Wire.Offset)];
@@ -1273,6 +1315,7 @@ public sealed class CalibrationSession
             WalkCount = walkCount,
             Derivation = new Derivation
             {
+                NotDerived = _notDerived,
                 Structural = new StructuralDerivation
                 {
                     Offsets = Group(OffsetKeys.NodeParent, OffsetKeys.NodeChildListHead, OffsetKeys.NodeScriptInstance),

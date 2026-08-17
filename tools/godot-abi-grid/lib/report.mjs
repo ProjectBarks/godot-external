@@ -15,26 +15,12 @@
 import { writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fullGrid, parseCellName } from './grid.mjs';
-
-const CHECK_ORDER = [
-  ['harness.runtime_axes', 'target self-identifies as the cell it is filed under'],
-  ['calibration.unaided', 'no shipped profile consumed'],
-  ['structural.child_head', '(a) child-list head by pointer identity'],
-  ['structural.parent', '(a) parent by pointer identity'],
-  ['semantic.size', '(b) size by known-value intersection'],
-  ['semantic.position', '(b) position'],
-  ['semantic.scale', '(b) scale'],
-  ['semantic.offset', '(b) anchor offsets'],
-  ['semantic.visible', '(b) visible flag'],
-  ['strings.names', '(c) node names exact'],
-  ['strings.text.ascii', '(c) ASCII label text exact'],
-  ['strings.text.unicode', '(c) non-ASCII label text exact'],
-  ['strings.text.rich', '(c) RichTextLabel text exact (astral codepoint)'],
-  ['structure.no_collapse', 'duplicated size does not collapse nodes'],
-  ['structure.walk_count', '(e) full-tree walk count'],
-  ['profile.agreement', '(d) agreement with the shipped §4.6 profile'],
-  ['bridge.managed', 'managed static root -> NativePtr -> walk root'],
-];
+// ONE list, owned by the check engine. This file used to keep a hand-maintained parallel copy that
+// listed 17 ids while 21 were scored — so the header said "Checks per cell: 17" over cells scoring
+// out of 21, and the per-cell tables could not show whether `geometry.absent` had passed. The four
+// it omitted were exactly the four added to close §13.11 #6. A second copy of a list is the same
+// species as every other entry in that table: nothing made the two agree.
+import { CHECK_CATALOG as CHECK_ORDER } from './checks.mjs';
 
 export function writeReport({ harnessRoot, summary, expected, outDir, reportPath, includeSynthetic = false }) {
   writeFileSync(reportPath, renderReport({ harnessRoot, summary, expected, outDir, includeSynthetic }));
@@ -110,6 +96,24 @@ export function renderReport({ harnessRoot, summary, expected, outDir, includeSy
     L();
     L(`> ${excludedSynthetic.length} synthetic (mock-driver) result(s) were EXCLUDED from the matrix:`);
     L(`> \`${excludedSynthetic.join('`, `')}\`. Those runs test the harness, not a calibrator.`);
+  }
+  L();
+
+  // ---- cross-cell ----
+  const gridChecks = summary?.gridChecks ?? [];
+  L('## Cross-cell assertions');
+  L();
+  L('Contradictions no single cell can see. A calibrator can be perfectly self-consistent within one');
+  L('cell and disagree with the cell next to it — and on cells no shipped profile covers, this and');
+  L('`offsets.internal_consistency` are the only things standing between a derived offset and nothing');
+  L('at all. Neither is corroboration by an independent SOURCE; both cells come from one calibrator.');
+  L();
+  if (!gridChecks.length) {
+    L('_Not produced — this summary predates `lib/crosscell.mjs`. Re-run `node calibrate.mjs --report`._');
+  } else {
+    L('| Check | Status | Detail |');
+    L('| --- | --- | --- |');
+    for (const c of gridChecks) L(`| \`${c.id}\` | ${c.status.toUpperCase()} | ${mdCell(c.detail)} |`);
   }
   L();
 
@@ -217,6 +221,10 @@ export function renderReport({ harnessRoot, summary, expected, outDir, includeSy
   L('| Result | Meaning |');
   L('| --- | --- |');
   L('| `n/n` | every applicable check passed; this cell is evidence |');
+  L('| `n/n †` | every applicable check passed, but no shipped profile covers this cell, so **no independent'
+    + ' source corroborates its offsets**. `offsets.internal_consistency` shows the derived numbers hang'
+    + ' together — a uniformly wrong layout also hangs together. Not evidence of correct offsets until the'
+    + ' §13.2 getter decoder or a measured profile covers it. |');
   L('| `n/m` | the calibrator ran and got some checks wrong — see the per-cell detail |');
   L('| `not built` | no export exists for this cell (missing engine or export template) |');
   L('| `not run` | built, but `calibrate.mjs` has not judged it |');
@@ -253,12 +261,18 @@ function renderRow(want, entry, isBuilt) {
   if (rec.synthetic) notes.push('**SYNTHETIC**');
   if (rec.isReferenceCell) notes.push('reference cell');
   if (skip) notes.push(`${skip} n/a`);
+  // A cell no shipped profile covers has NOTHING corroborating its offsets against an independent
+  // source: offsets.internal_consistency shows they hang together, which a uniformly wrong layout
+  // also does. Printing that cell as a clean `n/n` is how the four 4.3 rows read as evidence for the
+  // one claim this grid exists to make while nothing in them tested it. The gap is now in the row.
+  const uncorroborated = (rec.checks ?? []).some((c) => c.id === 'profile.agreement' && c.status === 'skip');
+  if (uncorroborated) notes.push('**offsets uncorroborated** (no shipped profile; internal consistency only)');
   // Every row is a single attempt. calibrate.mjs no longer retries anything, so
   // there is no retried-vs-first-try distinction left to disclose here.
   if (rec.error) notes.push(mdCell(rec.error));
 
   let result;
-  if (rec.status === 'pass') result = `**${pass}/${total}**`;
+  if (rec.status === 'pass') result = uncorroborated ? `${pass}/${total} †` : `**${pass}/${total}**`;
   else if (rec.status === 'fail') result = `${pass}/${total}`;
   else result = `\`${rec.status.replace('-', ' ')}\``;
 

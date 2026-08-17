@@ -19,6 +19,7 @@ gen-expected.mjs  regenerates project/expected.json from Main.tscn
 build.ps1         exports the grid  -> out/<version>-<template>-<precision>-<binding>/
 calibrate.mjs     launches each build, runs a calibration driver, judges the result
 selftest.mjs      proves the JUDGE works, with no Godot installed
+mutate-verify.mjs reverts each fix and proves the selftest goes red (§13.11's crude defence)
 profiles.json     the §4.6 offset tables, used ONLY as a cross-check
 lib/              grid axes, ground-truth loading, the check engine, report rendering
 drivers/mock.mjs  synthetic driver for selftest — never a measurement
@@ -32,6 +33,7 @@ REPORT.md         generated coverage matrix (committed)
 ```powershell
 node gen-expected.mjs          # only after editing project/Main.tscn
 node selftest.mjs              # validate the harness itself (no Godot needed)
+node mutate-verify.mjs         # revert each fix, confirm the selftest notices (no Godot needed)
 pwsh ./build.ps1 -ListOnly     # what can be built here, and what to install
 pwsh ./build.ps1               # export every buildable cell
 node calibrate.mjs --report    # judge every built cell, regenerate REPORT.md

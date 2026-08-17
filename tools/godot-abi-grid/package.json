@@ -8,7 +8,9 @@
   "scripts": {
     "expected": "node gen-expected.mjs",
     "expected:check": "node gen-expected.mjs --check",
-    "test": "node gen-expected.mjs --check && node selftest.mjs",
+    "test": "node gen-expected.mjs --check && node selftest.mjs && node mutate-verify.mjs",
+    "selftest": "node selftest.mjs",
+    "mutate": "node mutate-verify.mjs",
     "list": "node calibrate.mjs --list",
     "calibrate": "node calibrate.mjs",
     "report": "node calibrate.mjs --report"

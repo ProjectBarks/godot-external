@@ -195,6 +195,31 @@ public sealed class AbsentNeverWrongTests
     }
 
     [Fact]
+    public void EveryOffsetTheDriverDoesNotDeriveIsDeclaredWithAReason()
+    {
+        GridSceneMemory memory = new();
+        DriverResult result = Calibrate(memory);
+
+        // Silence and a considered refusal are indistinguishable from outside, and a comparison
+        // cannot interpret silence: a .NET driver that never derived scriptInstance.gcHandle — the
+        // offset the whole managed bridge hangs off — scored identically to a correct one. The driver
+        // is the only party that knows why a field is absent, so it is the party that has to say.
+        Assert.Contains(OffsetKeys.ControlGlobalPosition, result.Derivation.NotDerived.Keys);
+        Assert.Contains(OffsetKeys.ControlAnchor, result.Derivation.NotDerived.Keys);
+
+        // No managed probe in this run, so the GCHandle has no chain to be found through — declared
+        // rather than merely missing.
+        Assert.Contains(OffsetKeys.ScriptInstanceGcHandle, result.Derivation.NotDerived.Keys);
+
+        foreach ((string key, string reason) in result.Derivation.NotDerived)
+        {
+            Assert.False(string.IsNullOrWhiteSpace(reason), $"{key} was declined without a reason");
+            Assert.False(result.Derivation.Semantic.Offsets.ContainsKey(key), $"{key} both declined and published");
+            Assert.False(result.Derivation.Walk.Offsets.ContainsKey(key), $"{key} both declined and published");
+        }
+    }
+
+    [Fact]
     public void AnEvenSplitOnOneNodeAlsoWithholds()
     {
         GridSceneMemory memory = new(richTextTie: true);

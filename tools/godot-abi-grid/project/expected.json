@@ -878,12 +878,7 @@
       "childCount": 0,
       "isControl": false,
       "anchored": false,
-      "anchors": [
-        0,
-        0,
-        0,
-        0
-      ],
+      "anchors": null,
       "offset": null,
       "position": null,
       "size": null,
@@ -1262,12 +1257,7 @@
       "childCount": 0,
       "isControl": false,
       "anchored": false,
-      "anchors": [
-        0,
-        0,
-        0,
-        0
-      ],
+      "anchors": null,
       "offset": null,
       "position": null,
       "size": null,

@@ -25,6 +25,7 @@ import { discoverCells, fullGrid, isReferenceCell, loadAvailability } from './li
 import { loadExpected } from './lib/expected.mjs';
 import { loadProfiles, selectProfile } from './lib/profiles.mjs';
 import { runChecks } from './lib/checks.mjs';
+import { crossCellChecks } from './lib/crosscell.mjs';
 import { launchTarget, killTarget, readyFilePathFor } from './lib/target.mjs';
 import { resolveDriver, runDriver, buildRequest } from './lib/driver.mjs';
 import { writeReport } from './lib/report.mjs';
@@ -172,10 +173,18 @@ async function runCell({ cell, expected, profiles, driver, opts }) {
     if (raw?.synthetic) record.synthetic = true;
 
     const profile = selectProfile(profiles, cell);
-    const { checks, counts } = runChecks({ cell, expected, profile, ready, result: raw });
+    const { checks, counts, normalised } = runChecks({ cell, expected, profile, ready, result: raw });
 
     record.checks = checks;
     record.counts = counts;
+    // Carried on the record, not just in rawResult, because summary.json strips rawResult and the
+    // cross-cell checks (lib/crosscell.mjs) read the summary. An offset that only one cell can see
+    // is an offset nothing can contradict.
+    record.derived = {
+      offsets: { ...normalised.structural.offsets, ...normalised.semantic.offsets, ...normalised.strings.offsets },
+      walk: normalised.walk,
+      scriptInstanceClass: normalised.scriptInstanceClass,
+    };
     record.status = counts.fail > 0 ? 'fail' : 'pass';
     record.engineVersion = ready?.engineVersion ?? raw?.engineVersion ?? null;
     record.profile = profile ? { id: profile.id, trust: profile.trust } : null;
@@ -270,6 +279,20 @@ async function main() {
     }
   }
 
+  // Assertions no single cell can make. A calibrator can be perfectly self-consistent inside one
+  // cell and still contradict the cell next to it, and until now nothing looked.
+  const gridChecks = crossCellChecks(records);
+  if (gridChecks.some((c) => c.status !== 'skip')) {
+    console.log(`${C.bold}cross-cell${C.reset}  (assertions that need more than one cell)`);
+    for (const check of gridChecks) {
+      console.log(`  ${statusGlyph(check.status)} ${check.id.padEnd(26)} ${check.title}`);
+      if (check.status !== 'pass' || process.env.GRID_VERBOSE === '1') {
+        console.log(`       ${paint(C.dim, check.detail)}`);
+      }
+    }
+    console.log();
+  }
+
   const summary = {
     $schema: 'godot-abi-grid/summary.v1',
     generatedAt: new Date().toISOString(),
@@ -279,6 +302,7 @@ async function main() {
     sceneSha256: expected.sourceSha256,
     expectedNodeCount: expected.nodeCount,
     availability,
+    gridChecks,
     cells: records.map(({ rawResult, ...rest }) => rest),
   };
   writeFileSync(join(opts.results, 'summary.json'), JSON.stringify(summary, null, 2));
@@ -291,7 +315,8 @@ async function main() {
   }
 
   const failed = records.filter((r) => r.status === 'fail' || r.status === 'error');
-  return failed.length ? 1 : 0;
+  const gridFailed = gridChecks.filter((c) => c.status === 'fail');
+  return failed.length || gridFailed.length ? 1 : 0;
 }
 
 main().then((code) => process.exit(code), (err) => {

@@ -155,6 +155,17 @@ public sealed record Derivation
 
     /// <summary>Link offsets used by the walk.</summary>
     public WalkDerivation Walk { get; init; } = new();
+
+    /// <summary>
+    /// Offsets this driver deliberately does not derive, each with the reason.
+    /// </summary>
+    /// <remarks>
+    /// Silence and a considered refusal look identical from outside, and the harness cannot tell
+    /// them apart — a .NET driver that never derived <c>scriptInstance.gcHandle</c>, the offset the
+    /// whole managed bridge hangs off, was indistinguishable from a correct one. The driver is the
+    /// only party that knows why a field is absent, so it is the party that has to say.
+    /// </remarks>
+    public IReadOnlyDictionary<string, string> NotDerived { get; init; } = new Dictionary<string, string>();
 }
 
 /// <summary>The §4.6 native → managed chain, when it was followed.</summary>

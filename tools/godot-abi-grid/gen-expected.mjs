@@ -171,8 +171,13 @@ function resolve(parsed, viewport) {
       parentPath: isRoot ? null : parent.path,
       childPaths: [],
       isControl,
-      anchors,
-      anchored: anchors.some((a) => a !== 0),
+      // `anchors` is a Control field, exactly like the four below it. Emitting [0,0,0,0] for a bare
+      // Node was a spec contradiction rather than a harmless default: geometry.absent asserts that a
+      // node with no CanvasItem reports null for every geometry field including this one, so a
+      // driver publishing precisely what the ground truth stated would FAIL. Ground truth and the
+      // check cannot disagree about the same field.
+      anchors: isControl ? anchors : null,
+      anchored: isControl && anchors.some((a) => a !== 0),
       offset: isControl ? offset : null,
       position: isControl ? [left, top] : null,
       size: isControl ? [right - left, bottom - top] : null,

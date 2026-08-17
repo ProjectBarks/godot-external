@@ -48,7 +48,7 @@ export function buildRequest({ cell, ready, expected }) {
       walkRootPath: expected.walkRootRuntimePath,
       // Known-value anchors for semantic intersection.
       sizes: expected.intersectionAnchors,
-      visible: expected.visibility,
+      visible: visibilityAnchors(expected),
       // Structural anchors need no values at all — pointer identity only.
       nodeCount: walk.nodeCount,
       names: walk.names,
@@ -62,6 +62,33 @@ export function buildRequest({ cell, ready, expected }) {
       reportNodes: true,
       reportText: true,
     },
+  };
+}
+
+/**
+ * §12.5 needs the anchors to INTERSECT, not to be the answer key.
+ *
+ * The whole of `expected.visibility` used to go over the wire: `visiblePaths` (21) plus
+ * `hiddenPaths` (2) is every CanvasItem in the scene. `semantic.visible` then asserted 23 values the
+ * request had already handed the driver, and it could not have disagreed with a driver that simply
+ * echoed them back — the first species in §13.11's table, pointed at the anchor set rather than at a
+ * fixture. `semantic.size` is the same technique used correctly: 6 of 23.
+ *
+ * Two visible nodes and the hidden ones are what intersection actually requires — the hidden set is
+ * the discriminator, and a byte that is 0 on both hidden nodes and 1 on both visible ones is already
+ * near-unique. The other 19 CanvasItems the check asserts are then values the driver had to read.
+ *
+ * `visibleButNotInTreePaths` is deliberately withheld too: naming the node where `visible` and
+ * `visible_in_tree` disagree hands over the trap that node exists to set.
+ */
+export function visibilityAnchors(expected) {
+  const { visiblePath, hiddenPath, hiddenPaths, visiblePaths } = expected.visibility;
+  const visibleAnchors = [visiblePath, ...visiblePaths.filter((p) => p !== visiblePath)].slice(0, 2);
+  return {
+    visiblePath,
+    hiddenPath,
+    hiddenPaths,
+    visiblePaths: visibleAnchors,
   };
 }
 
