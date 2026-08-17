@@ -1,0 +1,15 @@
+* text=auto
+
+# The ABI grid's ground truth is byte-exact, not merely semantic:
+# tools/godot-abi-grid/lib/expected.mjs sha256s Main.tscn and aborts the whole
+# harness if it does not match expected.json, and gen-expected.mjs --check
+# string-compares expected.json against a freshly serialised copy. Git's default
+# per-platform EOL conversion therefore turns a clean checkout into a hard
+# failure: on Windows (core.autocrlf=true, which is what the GitHub
+# windows-latest runner uses) the scene arrives as CRLF, hashes differently from
+# the LF blob it was generated from, and every run dies with
+# "expected.json is STALE". Pin the hashed/compared inputs to LF so that every
+# checkout on every OS produces the same bytes.
+tools/godot-abi-grid/project/Main.tscn text eol=lf
+tools/godot-abi-grid/project/expected.json text eol=lf
+tools/godot-abi-grid/project/project.godot text eol=lf
