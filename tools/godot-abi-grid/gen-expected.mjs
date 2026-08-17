@@ -177,7 +177,10 @@ function resolve(parsed, viewport) {
       position: isControl ? [left, top] : null,
       size: isControl ? [right - left, bottom - top] : null,
       scale: isControl ? (p.scale ?? [1, 1]) : null,
-      visible: p.visible ?? true,
+      // `visible` is a CanvasItem field. A bare Node (DeltaSiblingOne, the
+      // parent-pointer tie-breaker) simply does not have one, and recording
+      // `true` for it would ask a calibrator to read a field that is not there.
+      visible: isControl ? (p.visible ?? true) : null,
       visibleInTree: (p.visible ?? true) && (parent ? parent.visibleInTree : true),
       text: TEXT_CLASSES.has(raw.class) ? (p.text ?? '') : null,
       hasScript: Object.hasOwn(p, 'script'),
@@ -210,6 +213,75 @@ function stringFacts(text) {
     // What a char32_t -> byte truncating decoder emits (the §4.6 scry bug).
     lossyByteTruncation: String.fromCharCode(...codepoints.map((c) => c & 0xff)),
   };
+}
+
+// ---------------------------------------------------------------------------
+// The two-instance rule.
+//
+// The calibrator publishes an offset only when decode-set ⊆ property-set with a
+// non-empty decode-set. Over a ONE-element property-set that is arithmetically
+// vacuous — any field of the right shape on that one node satisfies it — so the
+// calibrator withholds, correctly, and the field is never measured. Eight grid
+// series went by with richTextLabel.text at 0/24 for exactly this reason, and
+// the fixture had three more one-element sets behind it: the only scripted node
+// (which the whole managed bridge hangs off), the only hidden node, and the only
+// node with non-zero anchors.
+//
+// This is a FIXTURE property, so it is enforced here rather than in checks.mjs:
+// a scene that cannot support a measurement should fail at generation time, not
+// quietly produce a green cell with a blank column in it. Withholding on thin
+// evidence stays the calibrator's correct behaviour — nothing here relaxes it.
+//
+// Traps are counted but NOT enforced: a decoy only has to exist once (the
+// duplicated 409x151 size, the visible-but-not-in-tree node). They are listed so
+// the distinction is written down rather than remembered.
+// ---------------------------------------------------------------------------
+
+function fixtureCensus(nodes) {
+  const paths = (f) => nodes.filter(f).map((n) => n.path);
+
+  const byClass = new Map();
+  for (const n of nodes) byClass.set(n.class, (byClass.get(n.class) ?? 0) + 1);
+  const classes = [...byClass].map(([cls, count]) => ({ class: cls, count }))
+    .sort((a, b) => b.count - a.count || a.class.localeCompare(b.class));
+
+  const discriminators = [
+    { id: 'script', measures: 'node.scriptInstance, and every bridge reading behind it',
+      paths: paths((n) => n.hasScript) },
+    { id: 'not-canvas-item', measures: 'Node::data.parent, separated from parent_item/parent_control',
+      paths: paths((n) => !n.isControl) },
+    { id: 'hidden', measures: 'canvasItem.visible',
+      paths: paths((n) => n.visible === false) },
+    { id: 'anchored', measures: 'Control Data.offset[4], separated from Data.anchor[4]',
+      paths: paths((n) => n.anchored) },
+    { id: 'scaled', measures: 'control.scale, against an accessor that returns identity',
+      paths: paths((n) => n.scale && (n.scale[0] !== 1 || n.scale[1] !== 1)) },
+    { id: 'text', measures: 'label.text / richTextLabel.text',
+      paths: paths((n) => n.text !== null) },
+  ].map((d) => ({ ...d, count: d.paths.length }));
+
+  const traps = [
+    { id: 'visible-not-in-tree', catches: 'a reader that returns is_visible_in_tree() for `visible`',
+      paths: paths((n) => n.visible === true && n.visibleInTree === false) },
+  ].map((t) => ({ ...t, count: t.paths.length }));
+
+  const thin = [
+    ...classes.filter((c) => c.count < 2).map((c) => `class ${c.class} has ${c.count} instance(s)`),
+    ...discriminators.filter((d) => d.count < 2)
+      .map((d) => `discriminator "${d.id}" (${d.measures}) has ${d.count} instance(s): ${d.paths.join(', ') || 'none'}`),
+  ];
+  if (thin.length) {
+    throw new Error(
+      'Main.tscn breaks the two-instance rule:\n  - ' + thin.join('\n  - ')
+      + '\n\n  A property backed by ONE node cannot be derived: decode-set ⊆ property-set is'
+      + '\n  vacuously true for any field of the right shape, so the calibrator withholds and the'
+      + '\n  field is never measured on any cell. Add a second instance that can DISAGREE with the'
+      + '\n  first — a different value, a different parent, a different mode — rather than a copy.'
+      + '\n  Do not relax this by relaxing the calibrator; the withhold is correct.',
+    );
+  }
+
+  return { rule: 'every class and every discriminator needs >= 2 instances', classes, discriminators, traps };
 }
 
 // ---------------------------------------------------------------------------
@@ -248,6 +320,16 @@ function build() {
   const unicodeLabel = nodes.find((n) => n.name === 'ZetaLabelUnicode');
   const asciiLabel = nodes.find((n) => n.name === 'ZetaLabelAscii');
   const richLabel = nodes.find((n) => n.name === 'ZetaRich');
+  // The SECOND RichTextLabel. A class with one instance cannot be published by
+  // a calibrator whose rule is decode-set ⊆ class-set, decode-set ≠ ∅: with one
+  // member the subset test is vacuously true for any string-shaped field, so it
+  // withholds — correctly — and richTextLabel.text went underived on every cell
+  // of eight grid series while label.text (two instances) derived on 23/24.
+  //
+  // Its text is the RAW BBCode source, because that is what RichTextLabel stores
+  // in its String member (§4.6); the rendered text has the tags stripped and is
+  // held in a separate item tree. What is recorded here is what is STORED.
+  const richBbcodeLabel = nodes.find((n) => n.name === 'OmegaRich');
 
   // Anchors for known-value intersection (§12.5): non-round, mutually distinct,
   // and each backed by exactly one node so a single scan is near-unique.
@@ -269,7 +351,10 @@ function build() {
     generatedBy: 'gen-expected.mjs',
     generatedFrom: 'project/Main.tscn',
     sourceSha256: sha256,
-    readyContract: 'godot-abi-grid/ready.v1',
+    // ready.v2 added rawTree/rawWalkCount: the engine's own child lists, internal
+    // children included. Cells exported against a v1 probe must fail loudly rather
+    // than fall back to a node count the in-memory walk cannot reproduce.
+    readyContract: 'godot-abi-grid/ready.v2',
     walkRoot: nodes[0].path,
     walkRootRuntimePath: `/root/${nodes[0].path}`,
     nodeCount: nodes.length,
@@ -283,17 +368,35 @@ function build() {
       ascii: { path: asciiLabel.path, ...stringFacts(asciiLabel.text) },
       unicode: { path: unicodeLabel.path, ...stringFacts(unicodeLabel.text) },
       rich: { path: richLabel.path, ...stringFacts(richLabel.text) },
+      richBbcode: { path: richBbcodeLabel.path, bbcode: true, ...stringFacts(richBbcodeLabel.text) },
       names: nodes.map((n) => n.name),
     },
+    fixture: fixtureCensus(nodes),
     visibility: {
+      // visiblePath/hiddenPath are the original single pair and are load-bearing
+      // in checks.mjs; they stay. The plural forms are what a calibrator needs to
+      // INTERSECT — one hidden node cannot separate `visible` from any other byte
+      // that happens to be zero on it.
       visiblePath: nodes.find((n) => n.name === 'VisibleTwin').path,
       hiddenPath: nodes.find((n) => n.name === 'HiddenTwin').path,
+      hiddenPaths: nodes.filter((n) => n.visible === false).map((n) => n.path),
+      visiblePaths: nodes.filter((n) => n.visible === true).map((n) => n.path),
+      // Visible in itself, invisible in the tree: Godot 4's CanvasItem keeps
+      // `visible` and `parent_visible_in_tree` next to each other, and this is the
+      // only node where the two disagree in that direction. `visible` is TRUE here.
+      visibleButNotInTreePaths: nodes
+        .filter((n) => n.visible === true && n.visibleInTree === false).map((n) => n.path),
     },
     managedBridge: {
       staticRootType: 'Probe',
       staticRootField: 'Instance',
       staticRootFieldGdscript: 'instance',
       resolvesToPath: nodes[0].path,
+      // Every node carrying a script. node.scriptInstance must be non-null on
+      // exactly these and null on all the others; with one entry that was not a
+      // constraint. NOTE: lib/driver.mjs does not forward this to the driver yet,
+      // so a calibrator still has to discover it structurally.
+      scriptedPaths: nodes.filter((n) => n.hasScript).map((n) => n.path),
       fields: {
         ProbeAscii: 'GridProbe ASCII 0123',
         ProbeUnicode: 'héllo ✦ 日本語',

@@ -12,7 +12,7 @@ class_name Probe
 
 const READY_FILE_ENV := "GRID_READY_FILE"
 const EXIT_AFTER_ENV := "GRID_EXIT_AFTER"
-const CONTRACT_VERSION := "godot-abi-grid/ready.v1"
+const CONTRACT_VERSION := "godot-abi-grid/ready.v2"
 
 static var instance: Probe
 static var harness_root: Node
@@ -59,10 +59,42 @@ static func count_nodes(node: Node) -> int:
 	return total
 
 
+# The RAW child list, internal children included (ready.v2). See the long comment
+# in Probe.cs: get_children() hides children added with INTERNAL_MODE_FRONT/BACK,
+# but a calibrator walking Node::data.children in memory sees them as ordinary
+# list entries. RichTextLabel's VScrollBar is one, so the authored scene and the
+# in-memory tree do not have the same node count, and only the engine can say so.
+static func raw_tree(root: Node) -> Array:
+	var rows: Array = []
+	_append_raw_tree(root, str(root.name), rows)
+	return rows
+
+
+static func _append_raw_tree(node: Node, path: String, rows: Array) -> void:
+	var count := node.get_child_count(true)
+	var child_names: Array = []
+	for i in range(count):
+		child_names.append(str(node.get_child(i, true).name))
+
+	rows.append({
+		"path": path,
+		"name": str(node.name),
+		"class": node.get_class(),
+		"children": child_names,
+		"internal": node.get_parent() != null and not node.get_parent().get_children().has(node),
+	})
+
+	for i in range(count):
+		var child := node.get_child(i, true)
+		_append_raw_tree(child, path + "/" + str(child.name), rows)
+
+
 func _write_ready_file() -> void:
 	var path := OS.get_environment(READY_FILE_ENV)
 	if path == "":
 		path = "user://grid-ready.json"
+
+	var tree := raw_tree(self)
 
 	var info := {
 		"contract": CONTRACT_VERSION,
@@ -76,6 +108,8 @@ func _write_ready_file() -> void:
 		"hasMonoFeature": OS.has_feature("mono"),
 		"walkRootPath": str(get_path()),
 		"walkCount": walk_count,
+		"rawWalkCount": tree.size(),
+		"rawTree": tree,
 		"executable": OS.get_executable_path(),
 		"userDataDir": OS.get_user_data_dir(),
 		"staticRootType": "Probe",

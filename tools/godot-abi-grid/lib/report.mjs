@@ -123,6 +123,15 @@ export function renderReport({ harnessRoot, summary, expected, outDir, includeSy
       L();
       L(`Engine: \`${rec.engineVersion ?? 'unknown'}\` · driver: \`${rec.driver}\` · profile: \`${rec.profile?.id ?? 'none'}\``);
       L();
+      const notes = rec.notes ?? rec.rawResult?.notes ?? [];
+      if (notes.length) {
+        L('<details><summary>driver notes</summary>');
+        L();
+        for (const n of notes) L(`- ${mdCell(n)}`);
+        L();
+        L('</details>');
+        L();
+      }
       L('| Check | Status | Detail |');
       L('| --- | --- | --- |');
       for (const [id] of CHECK_ORDER) {
@@ -244,6 +253,8 @@ function renderRow(want, entry, isBuilt) {
   if (rec.synthetic) notes.push('**SYNTHETIC**');
   if (rec.isReferenceCell) notes.push('reference cell');
   if (skip) notes.push(`${skip} n/a`);
+  // Every row is a single attempt. calibrate.mjs no longer retries anything, so
+  // there is no retried-vs-first-try distinction left to disclose here.
   if (rec.error) notes.push(mdCell(rec.error));
 
   let result;

@@ -244,18 +244,54 @@ Notes:
 | `harness.runtime_axes` | — | the target's own `OS.has_feature` view must match the cell name |
 | `calibration.unaided` | — | no shipped profile consumed |
 | `structural.child_head` | (a) | derived by pointer identity; must reproduce the authored child order |
-| `structural.parent` | (a) | must round-trip against the child lists for all 20 nodes |
+| `structural.parent` | (a) | must round-trip against the child lists for all 25 nodes |
 | `semantic.size` | (b) | known-value intersection, ≥ 2 samples |
 | `semantic.position` | (b) | |
 | `semantic.scale` | (b) | non-default scales, so a zeroing accessor cannot pass by luck |
 | `semantic.offset` | (b) | plus an explicit `Data.anchor[4]` vs `Data.offset[4]` trap |
 | `semantic.visible` | (b) | the Hidden/Visible twins must read differently |
-| `strings.names` | (c) | all 20 StringNames exact |
+| `strings.names` | (c) | all 25 StringNames exact |
 | `strings.text.*` | (c) | including non-ASCII and an astral codepoint |
 | `structure.no_collapse` | — | the duplicated size must not merge two nodes |
 | `structure.walk_count` | (e) | driver count, node records and the target's own count must agree |
 | `profile.agreement` | (d) | loud failure on disagreement, never a fallback |
 | `bridge.managed` | — | `.NET` cells: managed static → `NativePtr` → the native walk root |
+
+### The two-instance rule
+
+Everything below obeys one rule, and it is worth stating before the list because it is the rule the
+scene kept breaking:
+
+> **Every property the calibrator has to discriminate must be backed by at least two nodes that can
+> disagree with each other.**
+
+The calibrator publishes an offset only when decode-set ⊆ property-set with a non-empty decode-set.
+Over a **one-element** property-set that test is arithmetically vacuous — any field of the right
+shape on that one node satisfies it — so the calibrator withholds rather than publish on no
+evidence. That withhold is correct. The consequence is that the field is never measured *on any
+cell, in any series*, and a blank column looks exactly like a column nobody got round to.
+
+`richTextLabel.text` sat at 0/24 for eight series that way, while `label.text` — two instances —
+derived on 23 of 24 cell-runs. When that was fixed, three more one-element sets were found behind
+it. All four are now doubled:
+
+| property-set | was | now | what it measures |
+| --- | --- | --- | --- |
+| `RichTextLabel` | `ZetaRich` | + `OmegaRich` | `richTextLabel.text` |
+| scripted node | `RootHarness` | + `OmegaMarker` | `node.scriptInstance`, and the whole managed bridge behind it |
+| `visible = false` | `HiddenTwin` | + `OmegaHidden` | `canvasItem.visible` |
+| non-zero anchors | `AnchoredWide` | + `OmegaAnchored` | `Data.offset[4]`, separated from `Data.anchor[4]` |
+
+**`gen-expected.mjs` now refuses to generate** a scene in which any class, or any of the six
+discriminators it tracks, drops below two instances — the census is written into
+`expected.json.fixture` so the count is visible rather than remembered. This is enforced on the
+fixture, not on the calibrator: nothing about the withhold rule is relaxed, and a property that
+cannot be measured should fail at generation time rather than quietly produce a green cell with a
+hole in it.
+
+Doubling alone is not enough: two identical instances are one measurement taken twice. Each pair
+below differs *in kind* — different branch, different mode, different values — so the second
+instance can contradict the first.
 
 Scene design (`project/Main.tscn`) — every number is load-bearing:
 
@@ -265,27 +301,90 @@ Scene design (`project/Main.tscn`) — every number is load-bearing:
   (1920×1080) is deliberately **excluded** from the anchor list for the same reason.
 - **One duplicated size** (409×151 on `AlphaLeaf` and `GammaNest`) so a calibrator that keys nodes
   by geometry gets caught collapsing them.
-- **7 levels, sibling counts 2/3/4/3/2/3** — uneven on purpose, to exercise the intrusive
-  child-list walk and the parent pointer in both directions.
+- **7 levels, sibling counts 2/3/4/3/2/3 down the Alpha branch** — uneven on purpose, to exercise
+  the intrusive child-list walk and the parent pointer in both directions. Second instances are
+  added to the *Omega* branch precisely so this chain stays as it is; `OmegaPanel` carries the fan
+  (5 children) instead.
 - **`ZetaLabelUnicode` = `héllo ✦ 日本語`, `ZetaRich` = `ρich ✦ テキスト 𝄞 RTL`.** §4.6 found scry
   truncates `char32_t` → byte, silently. `expected.json` records what such a decoder *would*
   produce, so the harness names that bug specifically instead of reporting a generic mismatch. The
   `𝄞` is U+1D11E: one `char32_t`, two UTF-16 units — it catches surrogate-pair handling too.
 - **`VisibleTwin` / `HiddenTwin`** with different sizes, so each is individually identifiable while
   still bracketing the visible flag.
+- **`OmegaHidden` is the second hidden node, and `OmegaShadow` under it is the trap.** One
+  `visible = false` in twenty is a boolean discriminated by a single sample — and Godot 4's
+  `CanvasItem` keeps **two** adjacent booleans, `visible` and `parent_visible_in_tree`, which on a
+  scene where nothing inherits invisibility are true everywhere except one byte. `OmegaHidden` is
+  hidden under a visible parent; `OmegaShadow` is itself **visible** and inherits invisibility from
+  `OmegaHidden`. The two booleans therefore disagree at two nodes in *opposite* directions, and a
+  reader that returns `is_visible_in_tree()` where `visible` was asked for now fails on
+  `OmegaShadow`, where `expected.json` says `true` and the tree says `false`. Its rect is still
+  resolved — layout is not gated on visibility — so it is an ordinary geometry sample as well.
 - **`AnchoredWide`** has anchors of 0.5 and offsets `[-431, -197, 182, -46]`, resolving to position
   `(12.5, -40.5)`, size `613×151`. Upstream `Control::Data` puts `anchor[4]` immediately after
   `offset[4]`; on a scene where every anchor is zero, reading the wrong one looks correct. This
   node is the tie-breaker. It is also the shape that produced StS2's `BgContainer`
   `offset[-960,-516,1600,684]` in §4.6.
-- **`RichTextLabel`** because §4.6 gives it a different text offset from `Label`
-  (`0xa78` vs `0x800`).
+- **`OmegaAnchored` is the second one, and deliberately not a copy.** One anchored node can only say
+  "these two regions differ"; it cannot say *which is which* without being taken on faith. This one
+  is `0.125/0.375/0.625/0.875` with fractional offsets `[-19.875, 3.125, -19.375, -16.375]`, against
+  `AnchoredWide`'s uniform `0.5` and integer offsets, so a reader that takes `anchor[4]` for
+  `offset[4]` now produces two *different* wrong answers that disagree with each other. Every value
+  is exactly representable in binary32 — `0.125 × 289 = 36.125`, `0.875 × 161 = 140.875` against
+  `OmegaPanel`'s `289×161` — resolving to position `(16.25, 63.5)` and size `145×61`, so single and
+  double precision must agree to the bit and the rect cannot be reconstructed by rounding.
+- **`OmegaMarker` is the second scripted node**, and a bare `Node` rather than a `Control`.
+  `node.scriptInstance` is found by locating the slot that is non-null exactly where a script is
+  attached; with `RootHarness` alone that ranged over one node, and *every* managed-bridge reading
+  (`+0x08` owner backref, `+0x20` GCHandle, §4.6) hangs off it. Being a non-`CanvasItem` it also
+  doubles the sample behind every "this is not a Control" rejection — `DeltaSiblingOne` was likewise
+  alone — and the two differ in kind: one is an unscripted leaf deep in the Alpha branch, the other
+  is scripted and shallow in the Omega branch. `Marker.cs` / `Marker.gd` are deliberately empty; the
+  script exists to be attached, not to do anything. (`build.ps1` already staged and rewrote these
+  two filenames long before the files existed.)
+- **`RichTextLabel`, and two of them.** §4.6 gives it a different text offset from `Label`
+  (`0xa78` vs `0x800`), so one instance is needed to measure it at all — but one is not enough to
+  *publish* it. The calibrator only publishes a text offset when decode-set ⊆ class-set with a
+  non-empty decode-set, and on a class with a single instance that subset test is arithmetically
+  vacuous: any string-shaped field on that one node satisfies it, so the calibrator withholds
+  rather than publish on no evidence. That is the correct behaviour, and it is why
+  `richTextLabel.text` was **never derived on any cell in eight grid series** while `label.text`
+  — two instances — derived on 23 of 24 cell-runs. `OmegaRich` is the second instance, and it is
+  deliberately in the *other* branch of the tree, so the second reading is independent of the
+  first's neighbours in memory.
+- **`OmegaRich` has `bbcode_enabled = true`, the opposite of `ZetaRich`.** §4.6: `RichTextLabel`
+  stores the **raw BBCode source** in its single `String` member and keeps the *rendered* text in a
+  separate item tree. With bbcode off the two are identical and a reading taken from the wrong one
+  cannot be told apart; with it on, and a `[b]…[/b]` pair in the string, they differ by exactly the
+  tags. `expected.json` therefore records what is **stored**, not what is displayed — and any check
+  written against rendered text would be wrong, not merely unlucky.
 - **`Probe.cs`** forces a .NET build and publishes `public static Probe Instance` — plain static
   fields, not auto-properties, so the bridge test is about the bridge and not about backing-field
   name mangling.
 
 `expected.json` is generated from the scene and carries its SHA-256; `calibrate.mjs` refuses to run
 if the two have drifted.
+
+### Known gaps in the fixture, left open on purpose
+
+Both of these are real and both were deliberately *not* taken, because each needs a decision from
+whoever takes it rather than a quiet edit. They are written down so the next person decides rather
+than rediscovers.
+
+- **No node authors an empty string.** Godot's empty `String` is a **null `CowData` pointer**, which
+  is a genuinely different decode path from a populated one, and nothing here exercises it — a
+  decoder that dereferences it blind, or invents garbage for it, would score clean today. The
+  problem is where it lands: `strings.text.absent` asserts that nodes with **no text member** report
+  `null`, and `strings.text.wrong` asserts that authored text is **exact where present**. A `Label`
+  with `text = ""` is neither shape — it has a text member, and its correct reading is `""`, not
+  `null`. Adding it without first deciding which of the two checks owns it, and what a driver
+  reporting `null` for it should score, risks corrupting the one property that took eight series to
+  establish: *absent, never wrong*. Decide the semantics first, then add the node.
+- **Every node name is ASCII.** `lib/expected.mjs` enforces distinct ASCII names, so `strings.names`
+  proves only the ASCII path — and `StringName` does not have the same storage as `String`, so the
+  UTF-32 decoding proved by `strings.text.*` does not transfer to it. A non-ASCII node name would be
+  a cheap independent test of exactly that, but it contradicts an invariant the harness states
+  explicitly, so it is a deliberate design change and not a gap to fill quietly.
 
 ---
 
@@ -310,7 +409,10 @@ These are enforced in code, not just documented:
 - **Stock templates are not a modified engine.** A green row says the calibrator solved a layout it
   had not seen. It does not say the shipped profile is right for anyone else's fork.
 - **Compiler is a fifth axis** (§8.9, learned from Zolt-Dump's table: MSVC vs GCC). Official Windows
-  templates are MSVC-built, so this grid measures one compiler.
+  templates are **MinGW-GCC**-built, not MSVC, so this grid measures one compiler — that one. Measured,
+  not assumed: every cell's `type_info` blocks carry Itanium RTTI and share a single
+  `__class_type_info` vtable, with Itanium-mangled names (`5Label`, `13RichTextLabel`), which an MSVC
+  build would not emit. A template built with MSVC would need its own RTTI decoding and is untested.
 - **Windows x86_64 only.** The export preset and template discovery are Windows-specific, matching
   `Godot.External`'s current reach.
 - **Double precision is unmeasurable without custom templates** (above).

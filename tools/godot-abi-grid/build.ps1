@@ -74,12 +74,20 @@ if (-not $DoubleTemplateDir -and $env:GODOT_DOUBLE_TEMPLATES) { $DoubleTemplateD
 
 # Godot.NET.Sdk and TargetFramework must track the engine version, or the
 # export's `dotnet publish` step fails in a way that looks like an export bug.
+#
+# The TFM also decides which CLR gets bundled into data_<assembly>_windows_x86_64,
+# and that is what the bridge.managed check reads. A net8.0 export ships a
+# self-contained .NET 8 runtime whose coreclr.dll exports no readable
+# DotNetRuntimeContractDescriptor, so the calibrator cannot attach to the managed
+# side at all and the .NET half of 4.6's chain goes unmeasured on every cell.
+# net9.0 is therefore the floor wherever the engine's SDK accepts it; a version
+# that rejects it falls back to $VersionFallbackTfm and the cell says so.
 $VersionMatrix = @{
     '4.2' = @{ Sdk = '4.2.2'; Tfm = 'net6.0' }
-    '4.3' = @{ Sdk = '4.3.0'; Tfm = 'net8.0' }
-    '4.4' = @{ Sdk = '4.4.1'; Tfm = 'net8.0' }
-    '4.5' = @{ Sdk = '4.5.1'; Tfm = 'net8.0' }
-    '4.6' = @{ Sdk = '4.6.0'; Tfm = 'net8.0' }
+    '4.3' = @{ Sdk = '4.3.0'; Tfm = 'net9.0' }
+    '4.4' = @{ Sdk = '4.4.1'; Tfm = 'net9.0' }
+    '4.5' = @{ Sdk = '4.5.0'; Tfm = 'net9.0' }
+    '4.6' = @{ Sdk = '4.6.0'; Tfm = 'net9.0' }
 }
 
 # --------------------------------------------------------------------------
@@ -212,7 +220,12 @@ function Get-InstallHint([string] $Version, [string] $Binding, [string] $What) {
     if ($Binding -eq 'dotnet') { $monoEd = '_mono'; $monoTp = '_mono' }
     switch ($What) {
         'editor' {
-            return ("Download Godot_v{0}-stable{1}_win64.zip from https://godotengine.org/download/archive/{0}-stable/ and unzip it under {2}" -f $Version, $monoEd, $GodotBinDir)
+            # NOTE the asset names differ between the two sources, and getting this wrong 404s:
+            # the GitHub release asset for the GDScript editor is "..._win64.exe.zip", while the
+            # mono editor is "..._mono_win64.zip". The download page links the same files under
+            # friendlier labels. Both spellings are given so a script can use either source.
+            $ghAsset = if ($Binding -eq 'dotnet') { 'mono_win64.zip' } else { 'win64.exe.zip' }
+            return ("Download Godot_v{0}-stable{1}_win64.zip from https://godotengine.org/download/archive/{0}-stable/ (GitHub release asset name: Godot_v{0}-stable_{3}) and unzip it under {2}" -f $Version, $monoEd, $GodotBinDir, $ghAsset)
         }
         'template' {
             return ("Download Godot_v{0}-stable{1}_export_templates.tpz from https://godotengine.org/download/archive/{0}-stable/ then Editor > Manage Export Templates > Install from File (or unzip its 'templates' folder to {2}\{0}.stable{3})" -f $Version, $monoTp, $TemplatesDir, $(if ($Binding -eq 'dotnet') { '.mono' } else { '' }))
@@ -231,12 +244,51 @@ function Get-InstallHint([string] $Version, [string] $Binding, [string] $What) {
 # Staging: copy the project and patch it for one cell
 # --------------------------------------------------------------------------
 
+# --------------------------------------------------------------------------
+# The .NET export REQUIRES a solution file, and says so only in a warning.
+#
+# GodotTools' export plugin aborts the managed half of the export with
+#   "This project contains C# files but no solution file was found"
+# and the editor still exits 0, having written a perfectly good native
+# grid.exe with NO data_<assembly>_windows_x86_64/ payload beside it. The
+# exported game then dies with 0xC0000005 the moment it loads Probe.cs.
+#
+# `--build-solutions` does NOT create the .sln in headless mode (verified on
+# 4.5-stable.mono: the step runs, reports DONE, and produces nothing), so the
+# harness writes it. This is Godot's own solution layout, not `dotnet new sln`'s
+# - the ExportDebug/ExportRelease solution configurations are the ones
+# `dotnet publish -c ExportDebug|ExportRelease` is invoked with during export,
+# and the debug half of the grid depends on them existing.
+# --------------------------------------------------------------------------
+function New-GodotSolution([string] $Name) {
+    $guid = [guid]::NewGuid().ToString('B').ToUpper()
+    $csGuid = '{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}'
+    $configs = @('Debug', 'ExportDebug', 'ExportRelease')
+
+    $sb = New-Object System.Text.StringBuilder
+    [void] $sb.AppendLine('Microsoft Visual Studio Solution File, Format Version 12.00')
+    [void] $sb.AppendLine(('Project("{0}") = "{1}", "{1}.csproj", "{2}"' -f $csGuid, $Name, $guid))
+    [void] $sb.AppendLine('EndProject')
+    [void] $sb.AppendLine('Global')
+    [void] $sb.AppendLine("`tGlobalSection(SolutionConfigurationPlatforms) = preSolution")
+    foreach ($c in $configs) { [void] $sb.AppendLine("`t`t$c|Any CPU = $c|Any CPU") }
+    [void] $sb.AppendLine("`tEndGlobalSection")
+    [void] $sb.AppendLine("`tGlobalSection(ProjectConfigurationPlatforms) = postSolution")
+    foreach ($c in $configs) {
+        [void] $sb.AppendLine("`t`t$guid.$c|Any CPU.ActiveCfg = $c|Any CPU")
+        [void] $sb.AppendLine("`t`t$guid.$c|Any CPU.Build.0 = $c|Any CPU")
+    }
+    [void] $sb.AppendLine("`tEndGlobalSection")
+    [void] $sb.AppendLine('EndGlobal')
+    return $sb.ToString()
+}
+
 function New-Staging([string] $CellName, [string] $MinorVersion, [string] $Binding, [string] $Precision, [string] $Template, [string] $CustomTemplateExe, [string] $ExportExe) {
     $staging = Join-Path $StagingRoot $CellName
     if (Test-Path $staging) { Remove-Item -Recurse -Force $staging }
     New-Item -ItemType Directory -Force -Path $staging | Out-Null
 
-    foreach ($name in @('project.godot', 'Main.tscn', 'export_presets.cfg', 'Probe.cs', 'Probe.gd', 'GodotAbiGrid.csproj', 'expected.json')) {
+    foreach ($name in @('project.godot', 'Main.tscn', 'export_presets.cfg', 'Probe.cs', 'Probe.gd', 'Marker.cs', 'Marker.gd', 'GodotAbiGrid.csproj', 'expected.json')) {
         $src = Join-Path $ProjectDir $name
         if (Test-Path $src) { Copy-Item $src (Join-Path $staging $name) }
     }
@@ -256,6 +308,7 @@ function New-Staging([string] $CellName, [string] $MinorVersion, [string] $Bindi
     $scene = Read-TextFile (Join-Path $staging 'Main.tscn')
     if ($Binding -ne 'dotnet') {
         $scene = $scene -replace 'res://Probe\.cs', 'res://Probe.gd'
+        $scene = $scene -replace 'res://Marker\.cs', 'res://Marker.gd'
     }
     # Strip ';' comment lines. VariantParser handles them, but a comment is
     # never worth risking a scene-load failure across five engine versions,
@@ -265,12 +318,15 @@ function New-Staging([string] $CellName, [string] $MinorVersion, [string] $Bindi
 
     if ($Binding -eq 'dotnet') {
         Remove-Item (Join-Path $staging 'Probe.gd') -Force -ErrorAction SilentlyContinue
+        Remove-Item (Join-Path $staging 'Marker.gd') -Force -ErrorAction SilentlyContinue
         $csproj = Read-TextFile (Join-Path $staging 'GodotAbiGrid.csproj')
         $csproj = $csproj -replace 'Godot\.NET\.Sdk/[\d\.]+', ('Godot.NET.Sdk/' + $VersionMatrix[$MinorVersion].Sdk)
         $csproj = $csproj -replace '<TargetFramework>[^<]*</TargetFramework>', ('<TargetFramework>' + $VersionMatrix[$MinorVersion].Tfm + '</TargetFramework>')
         Write-TextFile (Join-Path $staging 'GodotAbiGrid.csproj') $csproj
+        Write-TextFile (Join-Path $staging 'GodotAbiGrid.sln') (New-GodotSolution 'GodotAbiGrid')
     } else {
         Remove-Item (Join-Path $staging 'Probe.cs') -Force -ErrorAction SilentlyContinue
+        Remove-Item (Join-Path $staging 'Marker.cs') -Force -ErrorAction SilentlyContinue
         Remove-Item (Join-Path $staging 'GodotAbiGrid.csproj') -Force -ErrorAction SilentlyContinue
     }
 
@@ -448,6 +504,43 @@ foreach ($version in $orderedVersions) {
                         Write-Bad ("{0}: export produced no executable (exit {1})" -f $cellName, $export.ExitCode)
                         Write-Host ($export.StdErr.Trim() -split "`n" | Select-Object -First 12 | ForEach-Object { "         $_" }) -ForegroundColor DarkGray
                         $errors += [pscustomobject]@{ cell = $cellName; error = "export failed (exit $($export.ExitCode))"; stderr = $export.StdErr }
+                        continue
+                    }
+
+                    # ---- the exe existing is NOT the export succeeding ----
+                    #
+                    # Godot exits 0 after an export that its own plugins aborted:
+                    # a .NET export with no .sln logs ERROR, writes the native
+                    # binary anyway, and omits the managed payload entirely. The
+                    # first grid run lost a cell to exactly that. So: fail on any
+                    # ERROR the exporter logged, and for .NET cells require the
+                    # assembly the game will actually try to load.
+                    $exportLog = ($export.StdOut + "`n" + $export.StdErr)
+                    $exportErrors = @($exportLog -split "`r?`n" | Where-Object { $_ -match '^\s*ERROR:' } | Select-Object -First 8)
+                    $payloadProblem = $null
+
+                    if ($binding -eq 'dotnet') {
+                        $payloadDir = Get-ChildItem $cellOut -Directory -ErrorAction SilentlyContinue |
+                            Where-Object { $_.Name -like 'data_*' } | Select-Object -First 1
+                        if (-not $payloadDir) {
+                            $payloadProblem = "no data_*/ managed payload beside grid.exe - the .NET half of the export did not run"
+                        } elseif (-not (Test-Path (Join-Path $payloadDir.FullName 'GodotAbiGrid.dll'))) {
+                            $payloadProblem = "managed payload $($payloadDir.Name) has no GodotAbiGrid.dll"
+                        }
+                    }
+
+                    if ($exportErrors.Count -gt 0 -or $payloadProblem) {
+                        $why = @()
+                        if ($payloadProblem) { $why += $payloadProblem }
+                        if ($exportErrors.Count -gt 0) { $why += "exporter logged $($exportErrors.Count) ERROR line(s)" }
+                        Write-Bad ("{0}: export incomplete - {1}" -f $cellName, ($why -join '; '))
+                        foreach ($line in $exportErrors) { Write-Host "         $line" -ForegroundColor DarkGray }
+                        Remove-Item -Recurse -Force $cellOut -ErrorAction SilentlyContinue
+                        $errors += [pscustomobject]@{
+                            cell = $cellName
+                            error = ($why -join '; ')
+                            exportErrors = $exportErrors
+                        }
                         continue
                     }
 

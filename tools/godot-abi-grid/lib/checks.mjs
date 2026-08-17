@@ -17,6 +17,7 @@
 //     scored against, not scored with.
 
 import { parseOffset, hex, toVector, normPtr, vectorsEqual, fmtVec, escapeText, codepoints } from './util.mjs';
+import { resolveWalkModel } from './rawtree.mjs';
 
 const EPS = 1e-3;
 
@@ -64,6 +65,7 @@ export function normaliseResult(raw) {
     },
     strings: { method: der.strings?.method ?? null, offsets: offsets(der.strings?.offsets) },
     walk: offsets(der.walk?.offsets ?? der.walk),
+    scriptInstanceClass: der.walk?.scriptInstanceClass ?? null,
     nodes,
     managedBridge: raw.managedBridge ?? null,
     notes: raw.notes ?? [],
@@ -127,14 +129,18 @@ export function runChecks({ cell, expected, profile, ready, result: rawResult })
   const checks = [];
   const controlNodes = expected.nodes.filter((n) => n.isControl);
 
+  // The tree a memory walk actually sees: the authored scene plus whatever
+  // internal children the engine added to it (lib/rawtree.mjs).
+  const walk = resolveWalkModel(expected, ready);
+
   // -- runtime axes agree with the cell name --------------------------------
-  checks.push(checkRuntimeAxes(cell, expected, ready));
+  checks.push(checkRuntimeAxes(cell, expected, ready, walk));
 
   // -- the calibrator ran unaided -------------------------------------------
   checks.push(checkUnaided(result));
 
   // -- (a) structural, by pointer identity ----------------------------------
-  checks.push(checkChildHead(expected, result, byPath, structureErrors));
+  checks.push(checkChildHead(expected, result, byPath, structureErrors, walk));
   checks.push(checkParent(expected, result, byPath));
 
   // -- (b) semantic, by known-value intersection ----------------------------
@@ -161,11 +167,15 @@ export function runChecks({ cell, expected, profile, ready, result: rawResult })
     checks.push(checkText(id, kind, expected, byPath));
   }
 
+  checks.push(checkTextAbsent(expected, result));
+  checks.push(checkTextWrong(expected, byPath));
+  checks.push(checkGeometryAbsent(expected, byPath));
+
   // -- distinct nodes are not collapsed -------------------------------------
   checks.push(checkNoCollapse(expected, byPath));
 
   // -- (e) full-tree walk ----------------------------------------------------
-  checks.push(checkWalkCount(expected, result, ready, structureErrors));
+  checks.push(checkWalkCount(expected, result, ready, structureErrors, walk));
 
   // -- (d) profile agreement -------------------------------------------------
   checks.push(checkProfileAgreement(cell, profile, result));
@@ -182,7 +192,7 @@ export function runChecks({ cell, expected, profile, ready, result: rawResult })
 // Individual checks
 // ---------------------------------------------------------------------------
 
-function checkRuntimeAxes(cell, expected, ready) {
+function checkRuntimeAxes(cell, expected, ready, walk) {
   const id = 'harness.runtime_axes';
   const title = 'target identifies itself as the cell it is filed under';
   if (!ready) {
@@ -191,6 +201,12 @@ function checkRuntimeAxes(cell, expected, ready) {
   const problems = [];
   if (ready.contract !== expected.readyContract) {
     problems.push(`ready contract "${ready.contract}" != "${expected.readyContract}" (Probe.cs/Probe.gd out of sync)`);
+  }
+  // The engine's own tree has to agree with the authored one everywhere the
+  // authored one speaks; extras are allowed only where the engine calls them
+  // internal children. A disagreement here poisons every structural check below.
+  for (const problem of walk.problems) {
+    problems.push(`raw tree vs authored scene: ${problem}`);
   }
   if (ready.templateVariant !== cell.template) {
     problems.push(`OS.has_feature reports template "${ready.templateVariant}", cell says "${cell.template}"`);
@@ -209,7 +225,13 @@ function checkRuntimeAxes(cell, expected, ready) {
   }
   return problems.length
     ? fail(id, title, `mislabelled cell — every result under it is untrustworthy:\n    - ${problems.join('\n    - ')}`, { ready })
-    : pass(id, title, `${ready.engineVersion} ${ready.templateVariant}/${ready.precision}/${ready.binding}`, { ready });
+    : pass(id, title,
+      `${ready.engineVersion} ${ready.templateVariant}/${ready.precision}/${ready.binding}`
+      + (walk.available
+        ? `; raw tree ${walk.nodeCount} nodes = ${expected.nodeCount} authored + ${walk.internalNames.length} engine-internal`
+        + `${walk.internalNames.length ? ` (${walk.internalNames.join(', ')})` : ''}`
+        : ''),
+      { ready });
 }
 
 function checkUnaided(result) {
@@ -226,7 +248,7 @@ function checkUnaided(result) {
   return pass(id, title, 'no shipped offsets consumed');
 }
 
-function checkChildHead(expected, result, byPath, structureErrors) {
+function checkChildHead(expected, result, byPath, structureErrors, walk) {
   const id = 'structural.child_head';
   const title = '(a) child-list head derived by pointer identity';
   const methodFail = requireDerivationMethod(id, title, result.structural.method, STRUCTURAL_METHOD,
@@ -246,7 +268,11 @@ function checkChildHead(expected, result, byPath, structureErrors) {
     const got = byPath.get(exp.path);
     if (!got) { problems.push(`${exp.path}: not reached by the walk`); continue; }
     const gotNames = got.childPtrs.map((p) => result.nodes.find((n) => n.nativePtr === p)?.name ?? `<unresolved ${p}>`);
-    const wantNames = exp.childPaths.map((p) => p.split('/').pop());
+    // The child list in memory carries the engine's internal children too, and
+    // rawtree.mjs has already proved that list contains the authored children in
+    // the authored order. Comparing against it keeps the ordering assertion whole
+    // instead of excusing a mismatch (lib/rawtree.mjs).
+    const wantNames = walk.childrenByPath.get(exp.path) ?? exp.childPaths.map((p) => p.split('/').pop());
     if (gotNames.length !== wantNames.length || gotNames.some((n, i) => n !== wantNames[i])) {
       problems.push(`${exp.path}: children [${gotNames.join(', ')}] != [${wantNames.join(', ')}]`);
     }
@@ -376,8 +402,12 @@ function checkVisible(expected, result, byPath) {
   const pre = semanticPreamble(id, title, result, 'canvasItem.visible');
   if (pre.stop) return pre.stop;
 
+  // `visible` lives on CanvasItem. expected.json records null for a node that has
+  // no CanvasItem in it at all (the bare-Node parent tie-breaker), and asserting
+  // a flag that does not exist would be a bug in the harness, not a finding.
+  const canvasItems = expected.nodes.filter((n) => n.visible !== null);
   const problems = [];
-  for (const exp of expected.nodes) {
+  for (const exp of canvasItems) {
     const got = byPath.get(exp.path);
     if (!got) { problems.push(`${exp.path}: not reached`); continue; }
     if (got.visible !== exp.visible) problems.push(`${exp.path}: ${got.visible} != ${exp.visible}`);
@@ -390,7 +420,7 @@ function checkVisible(expected, result, byPath) {
   }
   return problems.length
     ? fail(id, title, `canvasItem.visible ${hex(pre.off)} disagrees:\n    - ${problems.slice(0, 8).join('\n    - ')}`, { offset: pre.off })
-    : pass(id, title, `canvasItem.visible ${hex(pre.off)}, ${expected.nodeCount}/${expected.nodeCount} nodes exact (Hidden/Visible twins separated)`, { offset: pre.off });
+    : pass(id, title, `canvasItem.visible ${hex(pre.off)}, ${canvasItems.length}/${canvasItems.length} CanvasItem nodes exact (Hidden/Visible twins separated)`, { offset: pre.off });
 }
 
 function checkNames(expected, result, byPath) {
@@ -406,6 +436,154 @@ function checkNames(expected, result, byPath) {
   return problems.length
     ? fail(id, title, `node.name ${hex(nameOff)}:\n    - ${problems.slice(0, 8).join('\n    - ')}`, { offset: nameOff })
     : pass(id, title, `node.name ${hex(nameOff)}, ${expected.nodeCount}/${expected.nodeCount} StringNames exact`, { offset: nameOff });
+}
+
+/**
+ * Every node the scene authors WITHOUT text must report null.
+ *
+ * The three Zeta* checks only ever look at the nodes that DO have text, so a driver that invents a
+ * string for a node with no text member scores exactly the same as one that does not. That is not a
+ * hypothetical: a real series published "res://Probe.gd", "_process" and "@implicit_new" on plain
+ * Controls, and in one run another node's NAME, while the same result reported no text offset at
+ * all. Sixteen green cells would not have shown it.
+ *
+ * A wrong value is worse than a missing one — it is the difference between a table you can quote and
+ * one you cannot — so this is scored, not merely noted.
+ */
+function checkTextAbsent(expected, result) {
+  const id = 'strings.text.absent';
+  const title = '(c) nodes with no text member report null';
+
+  // Iterate the WALK, not expected.json. A driver reports every node it reached, and the walk
+  // legitimately contains engine-internal children the authored scene never mentions — scrollbars
+  // inside a RichTextLabel, and so on. Those have no authored text either, so they must report null
+  // like any other; checking only the authored list left exactly those nodes uninspected, and the
+  // literal defect this check exists for (`@VScrollBar@2` handed another node's NAME) sailed past it.
+  const problems = [];
+  let inspected = 0;
+
+  for (const got of result.nodes) {
+    if (!got.path) continue; // an unreconstructable path is structure's business, not this check's
+    const exp = expected.byPath.get(got.path);
+    if (exp && exp.text !== null) continue; // this one is supposed to have text
+    inspected++;
+    if (got.text !== null) {
+      const what = exp ? exp.class : 'engine-internal, not in expected.json';
+      problems.push(`${got.path} (${what}) has no text member but the driver reported "${escapeText(got.text)}"`);
+    }
+  }
+
+  if (!inspected) {
+    return skip(id, title, 'the walk reached no text-less node; nothing to assert');
+  }
+
+  // Denominator from what was actually inspected. Hardcoding the authored count let a driver drop
+  // sixteen of seventeen text-less nodes from its walk and still be told "17/17 reported null".
+  return problems.length
+    ? fail(id, title,
+      `${problems.length}/${inspected} text-less nodes were given a string:\n    - ${problems.slice(0, 8).join('\n    - ')}\n`
+      + '    A value invented for a node that cannot have one costs more than a missing one: it means no\n'
+      + '    reading in the result can be taken at face value.', { count: problems.length, inspected })
+    : pass(id, title, `${inspected}/${inspected} walked text-less nodes reported null`);
+}
+
+/**
+ * A node that HAS authored text must report it byte-exactly, or report null.
+ *
+ * The three Zeta* checks score "wrong" and "missing" identically, so the property that actually
+ * decides whether this table can be quoted — absent, never wrong — was not measurable from a
+ * result. It had to be reconstructed by eye from per-node values, and a series that published six
+ * wrong strings against two correct ones read as a coverage problem rather than a correctness one.
+ *
+ * Missing text passes here on purpose: it is already penalised by the checks above, and conflating
+ * the two is what hid this.
+ */
+/**
+ * A node with no CanvasItem base must report no geometry and no visibility.
+ *
+ * The geometry checks all filter to `expected.nodes.filter(n => n.isControl)`, so the non-Controls
+ * were never looked at — and a driver that invented `visible=true`, `size=[0,0]`, `scale=[0,0]` for
+ * an object with no CanvasItem at all scored full marks through an entire series. Zeros are the
+ * shape of garbage that plausibility cannot catch, which is precisely why this needs asserting
+ * rather than assuming.
+ *
+ * Unlike the text equivalent this iterates the AUTHORED nodes only: "not in expected.json" implies
+ * no authored text, but it does not imply no geometry — the engine-internal children in the walk are
+ * mostly Controls and legitimately have some.
+ */
+function checkGeometryAbsent(expected, byPath) {
+  const id = 'geometry.absent';
+  const title = '(b) nodes with no CanvasItem report no geometry';
+  const bare = expected.nodes.filter((n) => !n.isControl);
+  if (!bare.length) {
+    return skip(id, title, 'every authored node is a Control; nothing to assert');
+  }
+
+  const fields = ['visible', 'size', 'position', 'scale', 'offset'];
+  const problems = [];
+  let inspected = 0;
+
+  for (const exp of bare) {
+    const got = byPath.get(exp.path);
+    if (!got) continue;
+    inspected++;
+    for (const field of fields) {
+      if (got[field] !== null && got[field] !== undefined) {
+        const shown = Array.isArray(got[field]) ? fmtVec(got[field]) : String(got[field]);
+        problems.push(`${exp.path} (${exp.class}) has no CanvasItem but reported ${field}=${shown}`);
+      }
+    }
+  }
+
+  if (!inspected) {
+    return skip(id, title, 'no non-Control node was reached by the walk');
+  }
+
+  return problems.length
+    ? fail(id, title,
+      `${problems.length} field(s) invented across ${inspected} non-Control node(s):\n    - ${problems.slice(0, 8).join('\n    - ')}\n`
+      + '    Reading a Control field off a non-Control succeeds and returns garbage (§12.4c), and the\n'
+      + '    garbage is often all zeros — which no plausibility test can reject.', { inspected })
+    : pass(id, title, `${inspected}/${inspected} non-Control node(s) reported no geometry`, { inspected });
+}
+
+function checkTextWrong(expected, byPath) {
+  const id = 'strings.text.wrong';
+  const title = '(c) authored text is exact where present, never invented';
+  const authored = expected.nodes.filter((n) => n.text !== null);
+  if (!authored.length) {
+    return skip(id, title, 'the scene authors no text; nothing to assert');
+  }
+
+  const problems = [];
+  let present = 0;
+  for (const exp of authored) {
+    const got = byPath.get(exp.path);
+    if (!got || got.text === null) continue; // absent is the other checks' business
+    present++;
+    if (got.text !== exp.text) {
+      problems.push(`${exp.path}: reported "${escapeText(got.text)}", authored "${escapeText(exp.text)}"`);
+    }
+  }
+
+  if (problems.length) {
+    return fail(id, title,
+      `${problems.length}/${present} reported string(s) are not what the scene authored:\n    - ${problems.join('\n    - ')}\n`
+      + '    A wrong string is a different failure from a missing one — it means the offset behind it is\n'
+      + '    wrong, and every other reading taken through that offset is suspect too.',
+      { present, wrong: problems.length });
+  }
+
+  // With nothing published there is nothing to be exact ABOUT. Reporting that as a pass is the
+  // failure mode this harness's own honesty rule names first, and it made a cell that published no
+  // text at all indistinguishable from one that published every string correctly.
+  if (!present) {
+    return skip(id, title, `no text was reported at all; ${authored.length} authored string(s) withheld`, { present: 0 });
+  }
+
+  return pass(id, title,
+    `${present}/${present} reported string(s) byte-exact (${authored.length - present} withheld)`,
+    { present, wrong: 0 });
 }
 
 function checkText(id, kind, expected, byPath) {
@@ -428,6 +606,23 @@ function checkText(id, kind, expected, byPath) {
       + 'Godot String is CowData<char32_t>; bulk-read len*4 bytes and decode UTF-32 properly.';
   } else if ([...got.text].every((c) => c.codePointAt(0) < 0x80) && spec.hasNonAscii) {
     diagnosis = '\n    DIAGNOSIS: all non-ASCII was dropped — the decoder is treating the buffer as ASCII/UTF-8.';
+  } else if (
+    // A result that is BOTH far too short AND shares no prefix with the expected
+    // text is a wrong ADDRESS, not a decoding bug. Observed live: ZetaRich decoded
+    // to "�", "�翶", "�翶���" and "Ā" on
+    // successive runs against an UNCHANGING scene. Varying garbage at a fixed target
+    // means a different wrong candidate was selected each time. Test this BEFORE the
+    // astral check below, which would otherwise fire on the same input and send the
+    // reader to the surrogate-pair code — the wrong file entirely.
+    got.text.length > 0
+    && got.text.length * 4 < spec.utf16Length
+    && got.text[0] !== spec.text[0]
+  ) {
+    diagnosis = `\n    DIAGNOSIS: got ${got.text.length} unit(s) against ${spec.utf16Length} expected, `
+      + 'sharing no prefix — this is a WRONG ADDRESS, not a decoding bug. The candidate offset '
+      + 'differs from the real one; if it varies between runs against the same scene, the '
+      + 'calibrator is picking a different wrong candidate each time rather than truncating a '
+      + 'correct read.';
   } else if (spec.hasAstral && got.text.length !== spec.utf16Length) {
     diagnosis = '\n    DIAGNOSIS: length differs on a string with an astral codepoint — check UTF-32 -> UTF-16 '
       + 'surrogate-pair conversion.';
@@ -469,18 +664,25 @@ function checkNoCollapse(expected, byPath) {
       .map((g) => `${fmtVec(g.size)} on ${g.paths.length} distinct nodes`).join('; '));
 }
 
-function checkWalkCount(expected, result, ready, structureErrors) {
+function checkWalkCount(expected, result, ready, structureErrors, walk) {
   const id = 'structure.walk_count';
   const title = '(e) full-tree walk count matches the authored scene';
   const problems = [];
-  if (result.walkCount !== expected.nodeCount) {
-    problems.push(`driver walked ${result.walkCount} nodes, scene has ${expected.nodeCount}`);
+  // A memory walk reaches the authored scene AND the engine's internal children;
+  // walk.nodeCount is that total, and rawtree.mjs has already checked it against
+  // the authored scene node by node.
+  const want = walk.nodeCount;
+  if (result.walkCount !== want) {
+    problems.push(`driver walked ${result.walkCount} nodes, the target's child lists hold ${want}`);
   }
-  if (result.nodes.length !== expected.nodeCount) {
-    problems.push(`driver reported ${result.nodes.length} node records, scene has ${expected.nodeCount}`);
+  if (result.nodes.length !== want) {
+    problems.push(`driver reported ${result.nodes.length} node records, the target's child lists hold ${want}`);
   }
   if (ready && ready.walkCount !== expected.nodeCount) {
-    problems.push(`the TARGET counted ${ready.walkCount} nodes in-process — expected.json is stale or the scene did not load fully`);
+    problems.push(`the TARGET counted ${ready.walkCount} authored nodes in-process — expected.json is stale or the scene did not load fully`);
+  }
+  if (ready && walk.available && ready.rawWalkCount !== want) {
+    problems.push(`the TARGET reported rawWalkCount ${ready.rawWalkCount} but listed ${want} nodes in rawTree`);
   }
   if (structureErrors.length) problems.push(...structureErrors);
 
@@ -490,7 +692,10 @@ function checkWalkCount(expected, result, ready, structureErrors) {
   }
   return problems.length
     ? fail(id, title, problems.join('\n    - '))
-    : pass(id, title, `${expected.nodeCount}/${expected.nodeCount} nodes, ${depths.size} distinct depths, max depth ${expected.maxDepth}`);
+    : pass(id, title,
+      `${want}/${want} nodes walked (${expected.nodeCount} authored`
+      + `${walk.internalNames.length ? ` + ${walk.internalNames.length} engine-internal` : ''}), `
+      + `${depths.size} distinct depths, max depth ${expected.maxDepth}`);
 }
 
 function checkProfileAgreement(cell, profile, result) {
@@ -511,9 +716,32 @@ function checkProfileAgreement(cell, profile, result) {
     compared.push(key);
     if (got !== want) mismatched.push({ key, got, want });
   }
-  for (const [key, want] of Object.entries(profile.walk ?? {})) {
+  const unresolvable = [];
+  for (const [key, wantRaw] of Object.entries(profile.walk ?? {})) {
     const got = result.walk[key];
     if (got === null || got === undefined) continue;
+
+    // A walk entry may be a scalar, or a map from the C++ class that OWNS the field to its offset.
+    // scriptInstance.ownerBackref is the only one that needs the second shape: it is a member of
+    // CSharpInstance or GDScriptInstance, which are unrelated implementations of one interface, and
+    // NOT of the engine object. So no single number can be right for both, and the axis is not the
+    // cell's binding either — one mono build hosts .gd and .cs scripted nodes side by side, so the
+    // question "which implementation is this node's?" is per-object and can only be answered by the
+    // target. The driver reports the class it read off the ScriptInstance's own vtable.
+    let want = wantRaw;
+    if (wantRaw !== null && typeof wantRaw === 'object') {
+      const owner = result.scriptInstanceClass;
+      if (!owner) {
+        unresolvable.push(`${key}: profile scopes it by implementing class, and the driver did not report one`);
+        continue;
+      }
+      if (!(owner in wantRaw)) {
+        unresolvable.push(`${key}: the driver read implementing class "${owner}", which this profile does not cover`);
+        continue;
+      }
+      want = wantRaw[owner];
+    }
+
     compared.push(key);
     if (got !== want) mismatched.push({ key, got, want });
   }
@@ -521,6 +749,11 @@ function checkProfileAgreement(cell, profile, result) {
   if (!compared.length) {
     return fail(id, title, `profile ${profile.id} exists but the driver reported no comparable offsets (missing: ${missing.join(', ')})`);
   }
+
+  // A key the profile cannot express for this target is not a disagreement, and must not be scored
+  // as one — but it must not vanish either, or the table looks more complete than it is.
+  const caveat = unresolvable.length ? `
+    not compared: ${unresolvable.join('; ')}` : '';
 
   if (mismatched.length) {
     const lines = mismatched.map((m) => `${m.key}: derived ${hex(m.got)}, profile ${hex(m.want)}`);
@@ -536,7 +769,7 @@ function checkProfileAgreement(cell, profile, result) {
     return fail(id, title, `${mismatched.length}/${compared.length} offsets disagree with ${profile.id}:\n    - ${lines.join('\n    - ')}\n    ${reading}`,
       { profileId: profile.id, trust: profile.trust, mismatched });
   }
-  return pass(id, title, `${compared.length}/${compared.length} offsets match ${profile.id} (trust=${profile.trust})`,
+  return pass(id, title, `${compared.length}/${compared.length} offsets match ${profile.id} (trust=${profile.trust})${caveat}`,
     { profileId: profile.id, trust: profile.trust });
 }
 
@@ -547,7 +780,19 @@ function checkManagedBridge(cell, expected, result, byPath) {
     return skip(id, title, 'gdscript cell — there is no managed bridge to test');
   }
   const bridge = result.managedBridge;
-  if (!bridge) return fail(id, title, 'driver reported no managedBridge result for a .NET cell');
+  if (!bridge) {
+    // The bridge is reached THROUGH node.scriptInstance. If the driver withheld that offset, this
+    // check has no input, and an unevaluatable check is a skip — the harness's first honesty rule.
+    // Scoring it as a failure punished a correct withhold and turned "I declined to guess" into
+    // "the bridge is broken", which is exactly the pressure that makes a calibrator guess.
+    if (result.structural.offsets['node.scriptInstance'] === null
+      || result.structural.offsets['node.scriptInstance'] === undefined) {
+      return skip(id, title,
+        'the driver withheld node.scriptInstance, so there is no chain to follow to a managed object. '
+        + 'Withholding an input must not manufacture a downstream failure.');
+    }
+    return fail(id, title, 'driver reported no managedBridge result for a .NET cell');
+  }
 
   const problems = [];
   if (bridge.staticRootType !== expected.managedBridge.staticRootType) {

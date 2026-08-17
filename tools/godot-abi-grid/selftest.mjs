@@ -76,6 +76,28 @@ const SCENARIOS = [
   },
   { name: 'Data.anchor[4] read where Data.offset[4] was wanted', faults: ['anchor-confusion'], mustFail: ['semantic.offset'] },
   { name: 'visible flag never actually located', faults: ['visible-blind'], mustFail: ['semantic.visible'] },
+  {
+    name: 'text invented for an authored node that has none',
+    faults: ['phantom-text'],
+    mustFail: ['strings.text.absent'],
+    mustPass: ['strings.text.ascii', 'strings.text.unicode', 'strings.text.rich'],
+  },
+  {
+    name: 'geometry invented for a node with no CanvasItem base',
+    faults: ['phantom-geometry'],
+    mustFail: ['geometry.absent'],
+    mustPass: ['semantic.size', 'semantic.visible'],
+  },
+  {
+    name: 'a node with real text is given a plausible but wrong string',
+    faults: ['wrong-text'],
+    mustFail: ['strings.text.wrong'],
+  },
+  {
+    name: 'text invented for an engine-internal node the scene never authored',
+    faults: ['phantom-text-internal'],
+    mustFail: ['strings.text.absent'],
+  },
   { name: 'managed address handed over instead of NativePtr (§4.6)', faults: ['bridge-managed-addr'], mustFail: ['bridge.managed'] },
   { name: 'cell directory mislabels the template variant', faults: [], readyOverrides: { templateVariant: 'debug' }, mustFail: ['harness.runtime_axes'] },
   { name: 'target counted a different number of nodes than expected.json', faults: [], readyOverrides: { walkCount: 19 }, mustFail: ['structure.walk_count'] },

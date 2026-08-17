@@ -33,6 +33,10 @@ export const FAULTS = {
   'anchor-confusion': 'read Data.anchor[4] where Data.offset[4] was wanted',
   'visible-blind': 'report every node as visible',
   'bridge-managed-addr': 'hand back the managed address instead of NativePtr',
+  'phantom-text': 'invent text for an authored node that has no text member',
+  'phantom-text-internal': 'invent text for an engine-internal node the scene never authored',
+  'wrong-text': 'report a plausible but incorrect string for a node that does have text',
+  'phantom-geometry': 'invent geometry and visibility for a node with no CanvasItem base',
 };
 
 function fakePtr(index) {
@@ -63,7 +67,11 @@ export async function run(request) {
     'control.scale': 0x4a8,
     'control.position': 0x4b8,
     'control.size': 0x4c0,
-    'label.text': 0x800,
+    // 0x7f8 is `text`; 0x800 is `xl_text`, the translated copy that shares the same CowData
+    // allocation when no translation resolves. §4.6 recorded 0x800 and the grid measured 0x7f8
+    // across three passes on stock templates, so this mock — which stands in for a CORRECT
+    // calibrator — reports the lower slot of the pair.
+    'label.text': 0x7f8,
     'richTextLabel.text': 0xa78,
   };
   const offsets = { ...base };
@@ -116,6 +124,49 @@ export async function run(request) {
 
   const rootPtr = ptrByPath.get(expected.walkRoot);
 
+  // Both of these reproduce real defects, and the second reproduces one that a check iterating
+  // expected.json alone cannot see: the walk contains engine-internal children the authored scene
+  // never mentions, and a driver that invents text for THOSE was scoring clean.
+  if (faults.has('phantom-geometry')) {
+    // All zeros, which is what a bare Node actually reads as through Control offsets — and is
+    // perfectly plausible geometry, so only class identity can reject it.
+    const victim = nodes.find((n) => n.size === null);
+    if (victim) {
+      victim.visible = true;
+      victim.size = [0, 0];
+      victim.position = [0, 0];
+      victim.scale = [0, 0];
+      victim.offset = [0, 0, 0, 0];
+    }
+  }
+
+  if (faults.has('wrong-text')) {
+    const victim = nodes.find((n) => n.text !== null);
+    if (victim) victim.text = 'res://Main.tscn';
+  }
+
+  if (faults.has('phantom-text')) {
+    const victim = nodes.find((n) => n.text === null);
+    if (victim) victim.text = 'res://Probe.gd';
+  }
+
+  if (faults.has('phantom-text-internal')) {
+    nodes.push({
+      name: '@VScrollBar@2',
+      class: 'VScrollBar',
+      nativePtr: fakePtr(7777),
+      parentPtr: rootPtr,
+      childPtrs: [],
+      size: [8, 100],
+      position: [0, 0],
+      scale: [1, 1],
+      offset: [0, 0, 8, 100],
+      anchors: [0, 0, 0, 0],
+      visible: true,
+      text: 'HiddenTwin',
+    });
+  }
+
   return {
     driver: 'mock',
     driverVersion: '0.1.0-synthetic',
@@ -158,10 +209,16 @@ export async function run(request) {
         },
       },
       walk: {
+        // The implementing C++ ScriptInstance class, as a real driver reads it off the instance's
+        // own vtable. It is NOT the cell's binding: one mono build hosts .cs and .gd scripted nodes
+        // side by side, so the question is per-object. This mock has one script language per cell,
+        // so the two coincide here — which is exactly why the grid alone cannot prove the per-class
+        // model, and why profiles.json records that ownerBackref is asserted rather than measured.
+        scriptInstanceClass: cell.binding === 'dotnet' ? 'CSharpInstance' : 'GDScriptInstance',
         offsets: {
           'childList.next': 0x0,
           'childList.node': 0x18,
-          'scriptInstance.ownerBackref': 0x8,
+          'scriptInstance.ownerBackref': cell.binding === 'dotnet' ? 0x8 : 0x10,
           'scriptInstance.gcHandle': 0x20,
         },
       },

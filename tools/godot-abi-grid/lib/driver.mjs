@@ -22,10 +22,16 @@ import { existsSync } from 'node:fs';
 import { join, resolve, extname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import { resolveWalkModel } from './rawtree.mjs';
+
 export const DRIVER_CONTRACT = 'godot-abi-grid/driver.v1';
 
 /** Ground truth the calibrator IS allowed to see: values, never offsets. */
 export function buildRequest({ cell, ready, expected }) {
+  // nodeCount and names describe the tree the calibrator will actually WALK, so
+  // they must include engine-internal children (lib/rawtree.mjs). They are still
+  // identity anchors — a count and a set of names — not offsets.
+  const walk = resolveWalkModel(expected, ready);
   return {
     contract: DRIVER_CONTRACT,
     pid: ready?.pid ?? null,
@@ -44,8 +50,8 @@ export function buildRequest({ cell, ready, expected }) {
       sizes: expected.intersectionAnchors,
       visible: expected.visibility,
       // Structural anchors need no values at all — pointer identity only.
-      nodeCount: expected.nodeCount,
-      names: expected.strings.names,
+      nodeCount: walk.nodeCount,
+      names: walk.names,
       managedStatic: cell.binding === 'dotnet'
         ? { type: expected.managedBridge.staticRootType, field: expected.managedBridge.staticRootField }
         : null,

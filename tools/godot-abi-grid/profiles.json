@@ -34,13 +34,13 @@
         "control.scale": "0x4a8",
         "control.position": "0x4b8",
         "control.size": "0x4c0",
-        "label.text": "0x800",
+        "label.text": "0x7f8",
         "richTextLabel.text": "0xa78"
       },
       "walk": {
         "childList.next": "0x0",
         "childList.node": "0x18",
-        "scriptInstance.ownerBackref": "0x8",
+        "scriptInstance.ownerBackref": { "CSharpInstance": "0x8", "GDScriptInstance": "0x10" },
         "scriptInstance.gcHandle": "0x20"
       },
       "comment": [
@@ -53,37 +53,58 @@
     {
       "id": "godot-4.5.x-debug-single-x64",
       "match": { "versionPrefix": "4.5", "template": "debug", "precision": "single", "arch": "x86_64" },
-      "trust": "unverified",
-      "verifiedAgainst": "none — read out of scry's disassembly, never executed",
-      "stockTemplateVerified": false,
+      "trust": "measured",
+      "verifiedAgainst": "stock 4.5 debug export templates, grid series 2026-08-17 (3 passes × 2 bindings, zero cross-run disagreement)",
+      "stockTemplateVerified": true,
       "realTWidth": 4,
       "offsets": {
         "node.scriptInstance": "0x70",
-        "node.parent": "0x178",
-        "node.childListHead": "0x198",
-        "node.name": "0x210",
-        "canvasItem.visible": "0x3c0",
-        "control.globalPosition": "0x448",
-        "control.offset": "0x500",
-        "control.scale": "0x4f8",
-        "control.position": "0x508",
-        "control.size": "0x510",
-        "label.text": "0x848",
-        "richTextLabel.text": "0xb18"
+        "node.parent": "0x130",
+        "node.childListHead": "0x150",
+        "node.name": "0x1c8",
+        "canvasItem.visible": "0x378",
+        "control.globalPosition": "0x400",
+        "control.offset": "0x478",
+        "control.anchor": "0x488",
+        "control.scale": "0x4b0",
+        "control.position": "0x4c0",
+        "control.size": "0x4c8",
+        "label.text": "0x800",
+        "richTextLabel.text": "0xa80"
       },
       "walk": {
         "childList.next": "0x0",
         "childList.node": "0x18",
-        "scriptInstance.ownerBackref": "0x8",
+        "scriptInstance.ownerBackref": { "CSharpInstance": "0x8", "GDScriptInstance": "0x10" },
         "scriptInstance.gcHandle": "0x20"
       },
-      "knownDefects": [
-        "§4.6: scry's debug constants OVERLAP — getOffset reads 0x500..0x50c while getPosition",
-        "reads 0x508/0x50c. Both cannot be right. control.scale (0x4f8) also sits BELOW",
-        "control.offset (0x500), inverting the field order that the release column and",
-        "upstream control.h agree on. Treat any debug-cell disagreement as evidence against",
-        "THIS TABLE first, not against the calibrator. That is precisely why §8.9 wants the",
-        "debug column measured."
+      "supersededTable": [
+        "This column was REPLACED on 2026-08-17 with the grid's measurement. It previously held",
+        "scry's disassembled debug constants (node.parent 0x178, visible 0x3c0, label.text 0x848,",
+        "richTextLabel.text 0xb18, ...), which the grid contradicted 8 of 13 times across three",
+        "passes on unchanged stock binaries. Those constants were also self-inconsistent: getOffset",
+        "read 0x500..0x50c while getPosition read 0x508/0x50c, and control.scale (0x4f8) sat BELOW",
+        "control.offset (0x500), inverting the field order that the release column and upstream",
+        "control.h both agree on. §8.9 asked for the debug column to be measured; it now is.",
+        "",
+        "The measured rule is uniform: DEBUG = RELEASE + 8, every field, no exceptions. Confirmed",
+        "on 4.5 and independently on 4.3 (§12.7), and corroborated a third way by the getter",
+        "decoder (§13.6), which finds no getter loading the old 0x848 anywhere in the 4.5 debug",
+        "template while its structural twin loads 0x808.",
+        "",
+        "scriptInstance.ownerBackref is now a per-CLASS map, and the class is the implementing C++",
+        "ScriptInstance type read off the instance's own vtable by RTTI — NOT the cell's binding.",
+        "That distinction is load-bearing and was nearly encoded wrong: CSharpInstance and",
+        "GDScriptInstance are unrelated classes implementing one interface, and a mono export",
+        "template runs .gd scripts perfectly well, so a SINGLE PROCESS can hold nodes of both kinds",
+        "at once. The correct value therefore differs per NODE, not per build. This grid only makes",
+        "it look build-shaped because each cell's probe script happens to match its cell name.",
+        "Measured 0x8 / 0x10 across 19 of 24 cell-runs with zero contradictions.",
+        "",
+        "checks.mjs accepts either shape per key: a scalar compares as before, an object resolves",
+        "against derivation.walk.scriptInstanceClass. A key this table cannot express for a given",
+        "target is NOT COMPARED rather than scored — and says so in the detail line, so the table",
+        "never reads as more complete than it is."
       ]
     }
   ]

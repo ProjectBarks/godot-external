@@ -1,6 +1,7 @@
-[gd_scene load_steps=2 format=3]
+[gd_scene load_steps=3 format=3]
 
 [ext_resource type="Script" path="res://Probe.cs" id="1_probe"]
+[ext_resource type="Script" path="res://Marker.cs" id="2_marker"]
 
 ; ---------------------------------------------------------------------------
 ; godot-abi-grid — AUTHORED GROUND TRUTH (docs/analysis.md §8.9)
@@ -19,6 +20,30 @@
 ;  * ZetaLabelUnicode / ZetaRich carry non-ASCII text including an astral
 ;    codepoint (U+1D11E). §4.6: scry truncates char32_t -> byte. The harness
 ;    MUST fail if our decoder does the same.
+;  * THE TWO-INSTANCE RULE. Every property the calibrator has to DISCRIMINATE
+;    must be backed by at least two nodes. The calibrator publishes an offset
+;    only when decode-set ⊆ property-set with a non-empty decode-set; over a
+;    ONE-element set that is arithmetically vacuous — any field of the right
+;    shape on that one node satisfies it — so the calibrator correctly withholds
+;    rather than publish on no evidence, and the field goes unmeasured forever.
+;    That is not hypothetical: Label had two instances and derived cleanly on
+;    23/24 cell-runs, while RichTextLabel had one and richTextLabel.text was
+;    NEVER derived, on any cell, in eight grid series.
+;
+;    The scene had four such one-element sets. All four are now doubled:
+;      RichTextLabel      ZetaRich        + OmegaRich    (text offset)
+;      scripted node      RootHarness     + OmegaMarker  (node.scriptInstance,
+;                                                         and the whole bridge)
+;      visible = false    HiddenTwin      + OmegaHidden  (canvasItem.visible)
+;      non-zero anchors   AnchoredWide    + OmegaAnchored (Data.anchor vs
+;                                                          Data.offset)
+;    gen-expected.mjs now FAILS if any of them drops back to one, so the next
+;    one of these cannot be discovered the way the first four were.
+;
+;    Doubling a sample is not enough on its own: the second instance must be
+;    able to DISAGREE with the first, or two nodes are one measurement made
+;    twice. So each pair differs in kind, not just in address — see the note on
+;    each node below.
 ;  * VisibleTwin / HiddenTwin are the visible-flag pair.
 ;  * AnchoredWide has non-zero anchors, so its position/size are computed from
 ;    the parent rect rather than being the raw offsets — this is the shape that
@@ -97,11 +122,18 @@ offset_top = 1.0
 offset_right = 245.0
 offset_bottom = 60.0
 
-[node name="DeltaSiblingOne" type="Control" parent="AlphaPanel/BetaBranch/GammaNest"]
-offset_left = 300.0
-offset_top = 5.0
-offset_right = 349.0
-offset_bottom = 44.0
+; DeltaSiblingOne is a bare Node on purpose, and it is the only non-CanvasItem in
+; the scene. Godot caches the parent three times over: Node::data.parent,
+; CanvasItem::parent_item and Control::data.parent_control. In a tree made only of
+; Controls all three hold the SAME address for every parent/child pair, so
+; pointer identity cannot separate them however many pairs it intersects -- the
+; 4.5-release-single-dotnet run left node.parent with three surviving candidates
+; (0x128, 0x420, 0x430) for exactly this reason. A child that is not a CanvasItem
+; has no parent_item and no parent_control, so it holds its parent in one place
+; only, and intersecting it against the Control pairs leaves Node::data.parent
+; alone. Same tie-breaking job as AnchoredWide does for Data.anchor vs
+; Data.offset; it has no geometry because a Node has none.
+[node name="DeltaSiblingOne" type="Node" parent="AlphaPanel/BetaBranch/GammaNest"]
 
 [node name="DeltaSiblingTwo" type="Control" parent="AlphaPanel/BetaBranch/GammaNest"]
 offset_left = 300.0
@@ -159,3 +191,113 @@ offset_top = 9.0
 offset_right = 110.0
 offset_bottom = 72.0
 color = Color(0.407843, 0.803922, 0.203922, 1)
+
+; The SECOND RichTextLabel, and the whole point of it is that there are two.
+; See the header note: one instance makes the decode-set ⊆ class-set test
+; vacuous, so richTextLabel.text was never published on any cell.
+;
+; It sits in the Omega branch, NOT beside ZetaRich, for two reasons: the
+; documented sibling-count chain 2/3/4/3/2/3 down the Alpha branch stays intact,
+; and the two instances are then allocated in different parts of the tree, so a
+; candidate offset that happens to decode one because of its neighbours in memory
+; has to survive a genuinely independent second reading.
+;
+; bbcode_enabled = true, DELIBERATELY the opposite of ZetaRich, and the text
+; carries a well-formed [b] tag pair. §4.6: RichTextLabel keeps the RAW BBCode
+; source in its single String member and builds a separate item tree of parsed
+; fragments ("Ωmega", " ✧ Кириллица 𝔅 BBCode") holding the RENDERED text. With
+; bbcode OFF the two are identical, so a reading taken from the wrong one is
+; invisible; with it ON they differ by the tags, and expected.json records the
+; raw source — what is STORED, not what is displayed.
+;
+; The text shares no prefix and no substring with ZetaRich's (different symbol:
+; U+2727 not U+2726; different astral codepoint: U+1D505 not U+1D11E), so a wrong
+; offset that decoded one of them could never be mistaken for the right one.
+;
+; 269x113 is odd in both axes and unique, like every other size here, and small
+; enough not to displace any of the six intersection anchors.
+[node name="OmegaRich" type="RichTextLabel" parent="OmegaPanel"]
+offset_left = 13.0
+offset_top = 79.0
+offset_right = 282.0
+offset_bottom = 192.0
+bbcode_enabled = true
+text = "[b]Ωmega[/b] ✧ Кириллица 𝔅 BBCode"
+
+; The SECOND scripted node, and the second non-CanvasItem.
+;
+; node.scriptInstance is found by looking for the slot that is non-null exactly
+; where a script is attached. RootHarness was the only scripted node in the
+; scene, so that test ranged over ONE node and any non-null pointer slot passed
+; it — and scriptInstance is the head of the chain the managed bridge hangs off
+; (+0x08 owner backref, +0x20 GCHandle, §4.6). The single most load-bearing
+; offset in the .NET half of the grid had the thinnest evidence in the fixture.
+;
+; It is a bare Node rather than a Control on purpose, so it also doubles the
+; sample behind every "this is not a CanvasItem" rejection — DeltaSiblingOne was
+; likewise alone. The two differ in kind: DeltaSiblingOne is an unscripted leaf
+; deep in the Alpha branch, this one is scripted and shallow in the Omega
+; branch, so a slot that is really parent_item or parent_control cannot survive
+; both. Marker.cs/Marker.gd are deliberately empty.
+[node name="OmegaMarker" type="Node" parent="OmegaPanel"]
+script = ExtResource("2_marker")
+
+; The SECOND hidden node, under a different parent from HiddenTwin.
+;
+; One `visible = false` in twenty is a boolean discriminated by a single sample.
+; Worse, Godot 4's CanvasItem stores TWO adjacent booleans — `visible` and
+; `parent_visible_in_tree` — and on a scene where nothing inherits invisibility
+; the second is true everywhere, so it is nearly indistinguishable from the
+; first. That is the same shape as the Data.anchor/Data.offset trap.
+;
+; OmegaHidden is hidden while its parent is visible. OmegaShadow below is the
+; opposite case: it is itself VISIBLE and inherits invisibility from this node.
+; Between them the two booleans disagree at two nodes in OPPOSITE directions, so
+; a reader that has confused `visible` with is_visible_in_tree() cannot pass —
+; and a reader that reports is_visible_in_tree() for `visible` now fails on
+; OmegaShadow, where expected.json says true and the tree says false.
+[node name="OmegaHidden" type="Panel" parent="OmegaPanel"]
+visible = false
+offset_left = 17.0
+offset_top = 200.0
+offset_right = 250.0
+offset_bottom = 307.0
+
+; Visible in itself, invisible in the tree. See the note on OmegaHidden.
+; Its rect is still resolved by the engine — layout is not gated on visibility —
+; so it is an ordinary geometry sample as well.
+[node name="OmegaShadow" type="ColorRect" parent="OmegaPanel/OmegaHidden"]
+offset_left = 5.0
+offset_top = 9.0
+offset_right = 154.0
+offset_bottom = 62.0
+color = Color(0.203922, 0.203922, 0.203922, 1)
+
+; The SECOND control with non-zero anchors.
+;
+; README calls Data.anchor[4] vs Data.offset[4] the trap, and until now it was
+; sprung by exactly one node: on the other nineteen controls both regions are
+; all-zero and reading either one looks identical. One sample can only say "this
+; region is not the other one"; it cannot say WHICH is which without trusting
+; that single node.
+;
+; So these anchors are NOT a copy of AnchoredWide's. AnchoredWide is 0.5/0.5/
+; 0.5/0.5 with integer offsets; this is 0.125/0.375/0.625/0.875 with fractional
+; ones. A reader that takes the anchor region for the offset region now gets two
+; DIFFERENT wrong answers that disagree with each other, instead of one wrong
+; answer that has to be taken on faith.
+;
+; Every value here is exactly representable in binary32, so single and double
+; precision must agree to the bit: 0.125*289 = 36.125, 0.375*161 = 60.375,
+; 0.625*289 = 180.625, 0.875*161 = 140.875 against OmegaPanel's 289x161, giving
+; position (16.25, 63.5) and size 145x61. Fractional anchor products with an
+; integer result are the point — the rect cannot be reconstructed by rounding.
+[node name="OmegaAnchored" type="Control" parent="OmegaPanel"]
+anchor_left = 0.125
+anchor_top = 0.375
+anchor_right = 0.625
+anchor_bottom = 0.875
+offset_left = -19.875
+offset_top = 3.125
+offset_right = -19.375
+offset_bottom = -16.375

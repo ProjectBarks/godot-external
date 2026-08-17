@@ -10,12 +10,21 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseOffset } from './util.mjs';
 
+// A profile value is normally a scalar offset. `scriptInstance.ownerBackref` is instead a map from
+// the C++ class that OWNS the field to its offset, because CSharpInstance and GDScriptInstance are
+// unrelated implementations of one interface and no single number is right for both. Normalise one
+// level into such a map rather than through it: parseOffset({...}) yields null, which silently
+// turned every per-class entry into "profile null" and made checks.mjs's resolution unreachable.
+const normalizeEntry = (v) => (v !== null && typeof v === 'object' && !Array.isArray(v)
+  ? Object.fromEntries(Object.entries(v).map(([owner, off]) => [owner, parseOffset(off)]))
+  : parseOffset(v));
+
 export function loadProfiles(harnessRoot) {
   const raw = JSON.parse(readFileSync(join(harnessRoot, 'profiles.json'), 'utf8'));
   return raw.profiles.map((p) => ({
     ...p,
-    offsets: Object.fromEntries(Object.entries(p.offsets).map(([k, v]) => [k, parseOffset(v)])),
-    walk: Object.fromEntries(Object.entries(p.walk ?? {}).map(([k, v]) => [k, parseOffset(v)])),
+    offsets: Object.fromEntries(Object.entries(p.offsets).map(([k, v]) => [k, normalizeEntry(v)])),
+    walk: Object.fromEntries(Object.entries(p.walk ?? {}).map(([k, v]) => [k, normalizeEntry(v)])),
   }));
 }
 

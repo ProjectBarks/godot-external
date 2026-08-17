@@ -2,11 +2,11 @@
   "$schema": "godot-abi-grid/expected.v1",
   "generatedBy": "gen-expected.mjs",
   "generatedFrom": "project/Main.tscn",
-  "sourceSha256": "b9e5e32b5de06c14dd93031717d6ba1fbd71856b63e7203c30730ce02b92dcdf",
-  "readyContract": "godot-abi-grid/ready.v1",
+  "sourceSha256": "82d74c936dbf7c2ff0f5cb624a8646c622356a4b6bb472b329da967a9fbc433d",
+  "readyContract": "godot-abi-grid/ready.v2",
   "walkRoot": "RootHarness",
   "walkRootRuntimePath": "/root/RootHarness",
-  "nodeCount": 20,
+  "nodeCount": 25,
   "maxDepth": 7,
   "viewport": [
     1920,
@@ -43,6 +43,10 @@
     },
     {
       "path": "RootHarness/OmegaPanel",
+      "children": 5
+    },
+    {
+      "path": "RootHarness/OmegaPanel/OmegaHidden",
       "children": 1
     }
   ],
@@ -187,6 +191,52 @@
       "hasAstral": true,
       "lossyByteTruncation": "Áich & Æ­¹È \u001e RTL"
     },
+    "richBbcode": {
+      "path": "RootHarness/OmegaPanel/OmegaRich",
+      "bbcode": true,
+      "text": "[b]Ωmega[/b] ✧ Кириллица 𝔅 BBCode",
+      "codepoints": [
+        91,
+        98,
+        93,
+        937,
+        109,
+        101,
+        103,
+        97,
+        91,
+        47,
+        98,
+        93,
+        32,
+        10023,
+        32,
+        1050,
+        1080,
+        1088,
+        1080,
+        1083,
+        1083,
+        1080,
+        1094,
+        1072,
+        32,
+        120069,
+        32,
+        66,
+        66,
+        67,
+        111,
+        100,
+        101
+      ],
+      "utf16Length": 34,
+      "codepointCount": 33,
+      "maxCodepoint": 120069,
+      "hasNonAscii": true,
+      "hasAstral": true,
+      "lossyByteTruncation": "[b]©mega[/b] ' \u001a8@8;;8F0 \u0005 BBCode"
+    },
     "names": [
       "RootHarness",
       "AlphaPanel",
@@ -207,18 +257,155 @@
       "AnchoredChild",
       "AlphaSibling",
       "OmegaPanel",
-      "OmegaChild"
+      "OmegaChild",
+      "OmegaRich",
+      "OmegaMarker",
+      "OmegaHidden",
+      "OmegaShadow",
+      "OmegaAnchored"
+    ]
+  },
+  "fixture": {
+    "rule": "every class and every discriminator needs >= 2 instances",
+    "classes": [
+      {
+        "class": "Control",
+        "count": 11
+      },
+      {
+        "class": "ColorRect",
+        "count": 4
+      },
+      {
+        "class": "Panel",
+        "count": 4
+      },
+      {
+        "class": "Label",
+        "count": 2
+      },
+      {
+        "class": "Node",
+        "count": 2
+      },
+      {
+        "class": "RichTextLabel",
+        "count": 2
+      }
+    ],
+    "discriminators": [
+      {
+        "id": "script",
+        "measures": "node.scriptInstance, and every bridge reading behind it",
+        "paths": [
+          "RootHarness",
+          "RootHarness/OmegaPanel/OmegaMarker"
+        ],
+        "count": 2
+      },
+      {
+        "id": "not-canvas-item",
+        "measures": "Node::data.parent, separated from parent_item/parent_control",
+        "paths": [
+          "RootHarness/AlphaPanel/BetaBranch/GammaNest/DeltaSiblingOne",
+          "RootHarness/OmegaPanel/OmegaMarker"
+        ],
+        "count": 2
+      },
+      {
+        "id": "hidden",
+        "measures": "canvasItem.visible",
+        "paths": [
+          "RootHarness/AlphaPanel/BetaBranch/HiddenTwin",
+          "RootHarness/OmegaPanel/OmegaHidden"
+        ],
+        "count": 2
+      },
+      {
+        "id": "anchored",
+        "measures": "Control Data.offset[4], separated from Data.anchor[4]",
+        "paths": [
+          "RootHarness/AlphaPanel/BetaBranch/AnchoredWide",
+          "RootHarness/OmegaPanel/OmegaAnchored"
+        ],
+        "count": 2
+      },
+      {
+        "id": "scaled",
+        "measures": "control.scale, against an accessor that returns identity",
+        "paths": [
+          "RootHarness/AlphaPanel",
+          "RootHarness/AlphaPanel/BetaBranch",
+          "RootHarness/OmegaPanel"
+        ],
+        "count": 3
+      },
+      {
+        "id": "text",
+        "measures": "label.text / richTextLabel.text",
+        "paths": [
+          "RootHarness/AlphaPanel/BetaBranch/GammaNest/DeltaCore/EpsilonCore/ZetaLabelAscii",
+          "RootHarness/AlphaPanel/BetaBranch/GammaNest/DeltaCore/EpsilonCore/ZetaLabelUnicode",
+          "RootHarness/AlphaPanel/BetaBranch/GammaNest/DeltaCore/EpsilonCore/ZetaRich",
+          "RootHarness/OmegaPanel/OmegaRich"
+        ],
+        "count": 4
+      }
+    ],
+    "traps": [
+      {
+        "id": "visible-not-in-tree",
+        "catches": "a reader that returns is_visible_in_tree() for `visible`",
+        "paths": [
+          "RootHarness/OmegaPanel/OmegaHidden/OmegaShadow"
+        ],
+        "count": 1
+      }
     ]
   },
   "visibility": {
     "visiblePath": "RootHarness/AlphaPanel/BetaBranch/VisibleTwin",
-    "hiddenPath": "RootHarness/AlphaPanel/BetaBranch/HiddenTwin"
+    "hiddenPath": "RootHarness/AlphaPanel/BetaBranch/HiddenTwin",
+    "hiddenPaths": [
+      "RootHarness/AlphaPanel/BetaBranch/HiddenTwin",
+      "RootHarness/OmegaPanel/OmegaHidden"
+    ],
+    "visiblePaths": [
+      "RootHarness",
+      "RootHarness/AlphaPanel",
+      "RootHarness/AlphaPanel/AlphaLeaf",
+      "RootHarness/AlphaPanel/BetaBranch",
+      "RootHarness/AlphaPanel/BetaBranch/GammaNest",
+      "RootHarness/AlphaPanel/BetaBranch/GammaNest/DeltaCore",
+      "RootHarness/AlphaPanel/BetaBranch/GammaNest/DeltaCore/EpsilonCore",
+      "RootHarness/AlphaPanel/BetaBranch/GammaNest/DeltaCore/EpsilonCore/ZetaLabelAscii",
+      "RootHarness/AlphaPanel/BetaBranch/GammaNest/DeltaCore/EpsilonCore/ZetaLabelUnicode",
+      "RootHarness/AlphaPanel/BetaBranch/GammaNest/DeltaCore/EpsilonCore/ZetaRich",
+      "RootHarness/AlphaPanel/BetaBranch/GammaNest/DeltaCore/EpsilonSibling",
+      "RootHarness/AlphaPanel/BetaBranch/GammaNest/DeltaSiblingTwo",
+      "RootHarness/AlphaPanel/BetaBranch/VisibleTwin",
+      "RootHarness/AlphaPanel/BetaBranch/AnchoredWide",
+      "RootHarness/AlphaPanel/BetaBranch/AnchoredWide/AnchoredChild",
+      "RootHarness/AlphaPanel/AlphaSibling",
+      "RootHarness/OmegaPanel",
+      "RootHarness/OmegaPanel/OmegaChild",
+      "RootHarness/OmegaPanel/OmegaRich",
+      "RootHarness/OmegaPanel/OmegaHidden/OmegaShadow",
+      "RootHarness/OmegaPanel/OmegaAnchored"
+    ],
+    "visibleButNotInTreePaths": [
+      "RootHarness/OmegaPanel/OmegaHidden/OmegaShadow"
+    ]
   },
   "managedBridge": {
     "staticRootType": "Probe",
     "staticRootField": "Instance",
     "staticRootFieldGdscript": "instance",
     "resolvesToPath": "RootHarness",
+    "scriptedPaths": [
+      "RootHarness",
+      "RootHarness/OmegaPanel/OmegaMarker"
+    ],
     "fields": {
       "ProbeAscii": "GridProbe ASCII 0123",
       "ProbeUnicode": "héllo ✦ 日本語",
@@ -684,12 +871,12 @@
     {
       "path": "RootHarness/AlphaPanel/BetaBranch/GammaNest/DeltaSiblingOne",
       "name": "DeltaSiblingOne",
-      "class": "Control",
+      "class": "Node",
       "depth": 5,
       "parentPath": "RootHarness/AlphaPanel/BetaBranch/GammaNest",
       "childPaths": [],
       "childCount": 0,
-      "isControl": true,
+      "isControl": false,
       "anchored": false,
       "anchors": [
         0,
@@ -697,25 +884,11 @@
         0,
         0
       ],
-      "offset": [
-        300,
-        5,
-        349,
-        44
-      ],
-      "position": [
-        300,
-        5
-      ],
-      "size": [
-        49,
-        39
-      ],
-      "scale": [
-        1,
-        1
-      ],
-      "visible": true,
+      "offset": null,
+      "position": null,
+      "size": null,
+      "scale": null,
+      "visible": null,
       "visibleInTree": true,
       "text": null,
       "hasScript": false
@@ -963,9 +1136,13 @@
       "depth": 2,
       "parentPath": "RootHarness",
       "childPaths": [
-        "RootHarness/OmegaPanel/OmegaChild"
+        "RootHarness/OmegaPanel/OmegaChild",
+        "RootHarness/OmegaPanel/OmegaRich",
+        "RootHarness/OmegaPanel/OmegaMarker",
+        "RootHarness/OmegaPanel/OmegaHidden",
+        "RootHarness/OmegaPanel/OmegaAnchored"
       ],
-      "childCount": 1,
+      "childCount": 5,
       "isControl": true,
       "anchored": false,
       "anchors": [
@@ -1026,6 +1203,189 @@
       "size": [
         101,
         63
+      ],
+      "scale": [
+        1,
+        1
+      ],
+      "visible": true,
+      "visibleInTree": true,
+      "text": null,
+      "hasScript": false
+    },
+    {
+      "path": "RootHarness/OmegaPanel/OmegaRich",
+      "name": "OmegaRich",
+      "class": "RichTextLabel",
+      "depth": 3,
+      "parentPath": "RootHarness/OmegaPanel",
+      "childPaths": [],
+      "childCount": 0,
+      "isControl": true,
+      "anchored": false,
+      "anchors": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "offset": [
+        13,
+        79,
+        282,
+        192
+      ],
+      "position": [
+        13,
+        79
+      ],
+      "size": [
+        269,
+        113
+      ],
+      "scale": [
+        1,
+        1
+      ],
+      "visible": true,
+      "visibleInTree": true,
+      "text": "[b]Ωmega[/b] ✧ Кириллица 𝔅 BBCode",
+      "hasScript": false
+    },
+    {
+      "path": "RootHarness/OmegaPanel/OmegaMarker",
+      "name": "OmegaMarker",
+      "class": "Node",
+      "depth": 3,
+      "parentPath": "RootHarness/OmegaPanel",
+      "childPaths": [],
+      "childCount": 0,
+      "isControl": false,
+      "anchored": false,
+      "anchors": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "offset": null,
+      "position": null,
+      "size": null,
+      "scale": null,
+      "visible": null,
+      "visibleInTree": true,
+      "text": null,
+      "hasScript": true
+    },
+    {
+      "path": "RootHarness/OmegaPanel/OmegaHidden",
+      "name": "OmegaHidden",
+      "class": "Panel",
+      "depth": 3,
+      "parentPath": "RootHarness/OmegaPanel",
+      "childPaths": [
+        "RootHarness/OmegaPanel/OmegaHidden/OmegaShadow"
+      ],
+      "childCount": 1,
+      "isControl": true,
+      "anchored": false,
+      "anchors": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "offset": [
+        17,
+        200,
+        250,
+        307
+      ],
+      "position": [
+        17,
+        200
+      ],
+      "size": [
+        233,
+        107
+      ],
+      "scale": [
+        1,
+        1
+      ],
+      "visible": false,
+      "visibleInTree": false,
+      "text": null,
+      "hasScript": false
+    },
+    {
+      "path": "RootHarness/OmegaPanel/OmegaHidden/OmegaShadow",
+      "name": "OmegaShadow",
+      "class": "ColorRect",
+      "depth": 4,
+      "parentPath": "RootHarness/OmegaPanel/OmegaHidden",
+      "childPaths": [],
+      "childCount": 0,
+      "isControl": true,
+      "anchored": false,
+      "anchors": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "offset": [
+        5,
+        9,
+        154,
+        62
+      ],
+      "position": [
+        5,
+        9
+      ],
+      "size": [
+        149,
+        53
+      ],
+      "scale": [
+        1,
+        1
+      ],
+      "visible": true,
+      "visibleInTree": false,
+      "text": null,
+      "hasScript": false
+    },
+    {
+      "path": "RootHarness/OmegaPanel/OmegaAnchored",
+      "name": "OmegaAnchored",
+      "class": "Control",
+      "depth": 3,
+      "parentPath": "RootHarness/OmegaPanel",
+      "childPaths": [],
+      "childCount": 0,
+      "isControl": true,
+      "anchored": true,
+      "anchors": [
+        0.125,
+        0.375,
+        0.625,
+        0.875
+      ],
+      "offset": [
+        -19.875,
+        3.125,
+        -19.375,
+        -16.375
+      ],
+      "position": [
+        16.25,
+        63.5
+      ],
+      "size": [
+        145,
+        61
       ],
       "scale": [
         1,

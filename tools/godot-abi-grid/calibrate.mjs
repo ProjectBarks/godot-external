@@ -19,6 +19,7 @@
 import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import { discoverCells, fullGrid, isReferenceCell, loadAvailability } from './lib/grid.mjs';
 import { loadExpected } from './lib/expected.mjs';
@@ -44,6 +45,22 @@ function parseArgs(argv) {
     report: false,
     list: false,
     launch: true,
+    // Pause between "target is ready" and "run the driver". DEFAULT 0.
+    //
+    // The history is worth keeping: 2500ms here once made
+    // Godot.External.Calibrator fail to locate a walk root on 18 consecutive
+    // attempts, because RootLocator collapsed every name slot's
+    // "_Data -> buffer" distance onto one value taken from whichever slot a
+    // Dictionary enumerated last. The longer a target ran, the more decoy copies
+    // of the node names its heap held, and the more reliably a decoy won.
+    //
+    // RootLocator now carries that distance per slot and orders its results by
+    // address, so root location no longer depends on how long the scene has been
+    // running. Letting the scene settle is otherwise the right thing to measure
+    // -- some semantic readings do move over the first frames -- so the option
+    // stays available, but 0 remains the default until a run demonstrates that a
+    // settled scene measures something the immediate attach does not.
+    settle: 0,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -59,6 +76,7 @@ function parseArgs(argv) {
       case '--report': opts.report = true; break;
       case '--list': opts.list = true; break;
       case '--no-launch': opts.launch = false; break;
+      case '--settle': opts.settle = Math.max(0, Number(next())); break;
       case '--mock-faults': process.env.GRID_MOCK_FAULTS = next(); break;
       case '-h': case '--help': printHelp(); process.exit(0); break;
       default:
@@ -103,6 +121,24 @@ function statusGlyph(status) {
 
 // ---------------------------------------------------------------------------
 
+/**
+ * Run a cell ONCE.
+ *
+ * This function used to retry, up to 14 times, whenever the driver reported it
+ * had failed to locate a walk root. That crutch existed for exactly one defect:
+ * RootLocator collapsed each name slot's "_Data -> buffer" distance onto a
+ * single value taken from whichever slot a Dictionary happened to enumerate
+ * last, so root location succeeded roughly two runs in five on an unchanging
+ * 4.5-release-single-dotnet target and essentially never on 4.3 .NET.
+ *
+ * That defect is fixed: NameSlots now carries the distance per slot and returns
+ * deduped, address-ordered results. Two consecutive full-grid runs at one
+ * attempt per cell located a walk root on all 16 cell-runs, zero misses. With
+ * the coin flip gone the retry has nothing left to correct, and a harness that
+ * can silently re-roll a cell is a harness that cannot report nondeterminism it
+ * has not yet noticed — so it is gone. One attempt, and the cell reports exactly
+ * the result it earned.
+ */
 async function runCell({ cell, expected, profiles, driver, opts }) {
   const record = {
     cell: cell.name,
@@ -128,6 +164,7 @@ async function runCell({ cell, expected, profiles, driver, opts }) {
       });
       child = launched.child;
       ready = launched.ready;
+      if (opts.settle > 0) await delay(opts.settle);
     }
 
     const request = buildRequest({ cell, ready, expected });
@@ -142,7 +179,12 @@ async function runCell({ cell, expected, profiles, driver, opts }) {
     record.status = counts.fail > 0 ? 'fail' : 'pass';
     record.engineVersion = ready?.engineVersion ?? raw?.engineVersion ?? null;
     record.profile = profile ? { id: profile.id, trust: profile.trust } : null;
+    // Kept on the record itself, not just in rawResult: summary.json strips
+    // rawResult, and the driver's own account of what it could not determine is
+    // the most useful thing in REPORT.md.
+    record.notes = Array.isArray(raw?.notes) ? raw.notes : [];
     record.rawResult = raw;
+    record.error = null;
   } catch (err) {
     record.status = err.code === 'DRIVER_UNAVAILABLE' ? 'driver-unavailable' : 'error';
     record.error = err.message;

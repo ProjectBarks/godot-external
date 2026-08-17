@@ -19,7 +19,7 @@ public partial class Probe : Control
 {
     public const string ReadyFileEnv = "GRID_READY_FILE";
     public const string ExitAfterEnv = "GRID_EXIT_AFTER";
-    public const string ContractVersion = "godot-abi-grid/ready.v1";
+    public const string ContractVersion = "godot-abi-grid/ready.v2";
 
     // --- statics the calibrator resolves ------------------------------------
     public static Probe Instance;
@@ -82,6 +82,55 @@ public partial class Probe : Control
         return total;
     }
 
+    // ------------------------------------------------------------------------
+    // The RAW child list, internal children included (ready.v2).
+    //
+    // Node.GetChildren() hides children added with INTERNAL_MODE_FRONT/BACK, but
+    // a calibrator walking Node::data.children in memory CANNOT hide them: they
+    // are ordinary entries in the same intrusive list. RichTextLabel builds a
+    // VScrollBar this way, so ZetaRich has one child in memory and none in the
+    // authored scene.
+    //
+    // Ground truth generated from Main.tscn therefore cannot describe what the
+    // walk actually sees, and stating a node count of 20 to a calibrator that
+    // will find 21 does not merely fail the cell -- it makes the CORRECT layout
+    // unacceptable and pushes the search onto a wrong one. Only the engine knows
+    // its own internal children, and their names (@VScrollBar@2) carry an
+    // instantiation counter that no static file could predict, so the engine
+    // reports them here and the harness reconciles.
+    // ------------------------------------------------------------------------
+    public static Godot.Collections.Array RawTree(Node root)
+    {
+        var rows = new Godot.Collections.Array();
+        AppendRawTree(root, root.Name, rows);
+        return rows;
+    }
+
+    private static void AppendRawTree(Node node, string path, Godot.Collections.Array rows)
+    {
+        int count = node.GetChildCount(true);
+        var childNames = new Godot.Collections.Array();
+        for (int i = 0; i < count; i++)
+        {
+            childNames.Add(node.GetChild(i, true).Name.ToString());
+        }
+
+        rows.Add(new Godot.Collections.Dictionary
+        {
+            { "path", path },
+            { "name", node.Name.ToString() },
+            { "class", node.GetClass() },
+            { "children", childNames },
+            { "internal", node.GetParent() != null && !node.GetParent().GetChildren().Contains(node) },
+        });
+
+        for (int i = 0; i < count; i++)
+        {
+            Node child = node.GetChild(i, true);
+            AppendRawTree(child, path + "/" + child.Name, rows);
+        }
+    }
+
     private void WriteReadyFile()
     {
         string path = OS.GetEnvironment(ReadyFileEnv);
@@ -89,6 +138,8 @@ public partial class Probe : Control
         {
             path = "user://grid-ready.json";
         }
+
+        Godot.Collections.Array rawTree = RawTree(this);
 
         var info = new Godot.Collections.Dictionary
         {
@@ -103,6 +154,8 @@ public partial class Probe : Control
             { "hasMonoFeature", OS.HasFeature("mono") },
             { "walkRootPath", GetPath().ToString() },
             { "walkCount", WalkCount },
+            { "rawWalkCount", rawTree.Count },
+            { "rawTree", rawTree },
             { "executable", OS.GetExecutablePath() },
             { "userDataDir", OS.GetUserDataDir() },
             { "staticRootType", nameof(Probe) },
