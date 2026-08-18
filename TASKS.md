@@ -21,6 +21,30 @@ Tracks both `godot-external` and `LiveClr`. Updated as tasks land.
 | Grid | 22 checks + 2 cross-cell. Runs 1–2 byte-identical. `bridge.managed` fails 12/12 (real gap) |
 | Absent-never-wrong | Holds — 648 records, 94/94 byte-exact, 0 invented |
 
+### Task board
+
+| | Task | State |
+| --- | --- | --- |
+| T1 | Statics in LiveClr | IN PROGRESS |
+| T2 | `bridge.managed` reads six values | IN PROGRESS |
+| T3 | Withhold paths declare themselves | IN PROGRESS |
+| T4 | Godot 4.4 support | **BLOCKED — no 4.4 editor or templates installed** |
+| T5a | Reflection defects + `HashMap` contradiction | IN PROGRESS |
+| T5b | Wire ClassDB cross-check | WAITING on T2/T3 (shares the calibrator) |
+| T6 | Godot 4.6 support | **BLOCKED — no 4.6 editor or templates installed** |
+| T7 | Derivation-group merge collision | IN PROGRESS |
+
+**T4 / T6 blocker, stated precisely.** `%APPDATA%\Godot\export_templates` holds only `4.3.stable`,
+`4.3.stable.mono`, `4.5.stable`, `4.5.stable.mono`. No Godot editor is installed on disk for 4.4 or
+4.6 either. Both tasks need the matching **editor** plus its **export templates**, and Godot ships
+templates only as a single `.tpz` bundle per version (~1 GB each, so ~2 GB total for 4.4.1 + 4.6.x,
+plus the two editors).
+
+This is a **resource** blocker, not a decision — the work itself is specified and cheap once the
+templates exist (T4 is a version-gate entry onto the 4.3-family parsers plus a calibration run).
+It is listed here rather than under BLOCKED-ON-YOU because nothing about it needs a design choice,
+only the download.
+
 ---
 
 ## Ready to delegate
