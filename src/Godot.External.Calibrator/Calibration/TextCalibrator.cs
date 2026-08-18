@@ -63,11 +63,29 @@ public static class TextCalibrator
     /// <summary>Longest string treated as real UI text rather than a misread pointer.</summary>
     public const int MaxLength = 4096;
 
-    /// <summary>Distance from a CowData data pointer back to its size field (§4.6).</summary>
-    public const int SizeOffset = 8;
+    /// <summary>
+    /// Distance from a CowData data pointer back to its size field — <b>derived per target</b>, not
+    /// a constant.
+    /// </summary>
+    /// <remarks>
+    /// It was a constant 8 here, and that was true for 4.2–4.5 and false for 4.6, where
+    /// <c>cowdata.h</c> inserts a <c>capacity</c> field ahead of the size and re-aligns the payload.
+    /// See <see cref="GodotText.TryDeriveSizeBackOffset"/>, which measures it from name buffers the
+    /// harness already identified; this property only follows what that measured.
+    /// </remarks>
+    public static int SizeOffset => GodotText.CowDataSizeBackOffset;
 
     /// <summary>Distance from a CowData data pointer back to its reference count.</summary>
-    public const int RefCountOffset = 16;
+    /// <remarks>
+    /// The reference count is the <em>first</em> member of the header
+    /// (<c>cowdata.h: REF_COUNT_OFFSET = 0</c>), so this distance is the whole header size, which
+    /// <c>cowdata.h</c> computes as the size field's offset plus <c>sizeof(USize)</c> rounded up to
+    /// <c>Memory::MAX_ALIGN</c> (16 on the toolchain the official Windows templates are built with).
+    /// That reproduces both measurements from the one derived number: 16 when the size sits at
+    /// <c>-8</c> (4.2–4.5, header <c>[refcount][size]</c>) and 32 when it sits at <c>-0x10</c>
+    /// (4.6, header <c>[refcount][capacity][size][pad]</c>).
+    /// </remarks>
+    public static int RefCountOffset => (SizeOffset + 8 + 15) & ~15;
 
     /// <summary>Discovers and classifies every valid string field on the given nodes.</summary>
     public static TextFieldSet Discover(
@@ -139,7 +157,7 @@ public static class TextCalibrator
             return false;
         }
 
-        if (!TryReadUInt64(reader, pointer - SizeOffset, out ulong size)
+        if (!TryReadUInt64(reader, pointer - (ulong)SizeOffset, out ulong size)
             || size < 1
             || size > MaxElements
             || size > MaxLength)
@@ -147,7 +165,7 @@ public static class TextCalibrator
             return false;
         }
 
-        if (!TryReadUInt64(reader, pointer - RefCountOffset, out ulong refCount) || refCount < 1 || refCount > MaxElements)
+        if (!TryReadUInt64(reader, pointer - (ulong)RefCountOffset, out ulong refCount) || refCount < 1 || refCount > MaxElements)
         {
             return false;
         }

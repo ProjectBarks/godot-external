@@ -23,18 +23,41 @@ namespace Godot.External.Reflection;
 /// decoder downstream would happily decode whatever function that was.
 /// </para>
 /// <para>
-/// <b>Unvalidated against a live process.</b> The reasoning is sound and the layouts are read from
-/// Godot's source, but no run has confirmed it. See <see cref="ClassDbElementWalk"/>.
+/// <b>Validated live.</b> Confirmed on all eight grid cells (4.3 and 4.5, release and debug, both
+/// bindings) against <c>Label::get_text</c> and <c>CanvasItem::is_visible</c> resolved by name
+/// through a <c>ClassDB</c> walk: exactly one probed slot lands in <c>.text</c> in every case, and
+/// the decoded displacement matches the calibrated offset. See docs/analysis.md §16.5.
 /// </para>
 /// </remarks>
 internal static class MethodBindProbe
 {
     /// <summary>
-    /// How many qwords from the start of the <c>MethodBind</c> to inspect. Eight covers both the
-    /// release and debug <c>sizeof(MethodBind)</c> with room to spare, and staying small is what
-    /// keeps a spurious second hit unlikely.
+    /// How many qwords from the start of the <c>MethodBind</c> to inspect.
     /// </summary>
-    public const int DefaultProbeSlots = 8;
+    /// <remarks>
+    /// <para>
+    /// <b>Measured, not assumed.</b> <c>sizeof(MethodBind)</c> reads <c>0x48</c> on the release
+    /// templates and <c>0x58</c> on the debug ones — identically on 4.3 and 4.5 — so the method
+    /// pointer sits at <b>slot 9</b> or <b>slot 11</b>. Twelve reaches both with one slot to spare.
+    /// </para>
+    /// <para>
+    /// <b>This shipped as 8, which refused 100% of probes on every grid cell.</b> Eight slots stop
+    /// one short of even the release layout, so the probe found no code address and reported "this
+    /// is not a typed MethodBind" for binds that were perfectly valid. §13.7 predicted the
+    /// debug/release shift (<c>arg_names</c> is <c>DEBUG_ENABLED</c>-only) and the default never
+    /// accommodated it.
+    /// </para>
+    /// <para>
+    /// <b>The window is still a window, not a size.</b> Hardcoding 9 or 11 would be the mistake
+    /// §13.7 warns against: probing for the slot whose value lands in the main module's
+    /// <c>.text</c> is self-validating, because a hit simultaneously proves the base address was
+    /// right. Staying small is what keeps a spurious second hit unlikely — measured, slots 0-11
+    /// hold exactly one <c>.text</c> pointer on all eight cells, with the neighbouring
+    /// <c>MethodBind</c>'s vtable (which points into <c>.rdata</c>, not <c>.text</c>) the nearest
+    /// thing to a competitor.
+    /// </para>
+    /// </remarks>
+    public const int DefaultProbeSlots = 12;
 
     /// <summary>
     /// Locates the single code pointer stored in a <c>MethodBind</c>.

@@ -32,7 +32,18 @@ const skipC = (id, title, detail, data) => ({ id, title, status: 'skip', detail,
 
 const hex = (v) => (v === null || v === undefined ? 'null' : `0x${Number(v).toString(16)}`);
 
-/** Flatten one record's derived numbers into `key -> offset`, offsets and walk links alike. */
+/**
+ * Flatten one record's derived numbers into `key -> offset`, offsets and walk links alike.
+ *
+ * This is a spread merge of two driver-supplied maps, and every other one of those in this tool had
+ * the collision hole — a key in both groups silently resolving to the later one. It does not here,
+ * and for a reason rather than by luck: the walk links are re-keyed under a `walk:` prefix that no
+ * offset key can carry, so the two namespaces cannot intersect. `d.offsets` itself arrives already
+ * merged and already collision-checked by lib/checks.mjs's mergeDerivationGroups (calibrate.mjs
+ * withholds any key two derivation groups disagreed about), so there is nothing left to resolve
+ * here. Both halves of that are load-bearing: drop the prefix, or hand this a raw spread of the
+ * three derivation groups, and the hole is back.
+ */
 function derivedOf(record) {
   const d = record?.derived;
   if (!d) return null;

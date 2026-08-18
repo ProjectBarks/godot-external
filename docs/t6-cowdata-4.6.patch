@@ -1,0 +1,332 @@
+# T6 handover patch — Godot 4.6 CowData header (docs/analysis.md §17.1)
+#
+# Godot 4.6 inserts a `capacity` field into the CowData header and aligns the payload to
+# Memory::MAX_ALIGN (16 on the official Windows toolchain), so the element count moves from
+# buffer-0x8 to buffer-0x10. The calibrator hardcodes buffer-0x8 in two places; with it, a 4.6
+# target decodes NO string at all and the run reports "found no StringName slot for RootHarness".
+#
+# This patch does not gate on a version. It DERIVES the distance from raw byte-scan hits for two
+# anchor names of different lengths, and refuses rather than guessing when the answer is ambiguous.
+# On 4.3/4.4.1/4.5 it derives -0x8 and changes nothing measurable; on 4.6.3 it derives -0x10.
+#
+# NOT APPLIED IN-TREE: src/Godot.External.Calibrator/ was owned by concurrent work (T2/T3) when this
+# was written, so it was developed and run against a private copy of that project. Every 4.6 number
+# in docs/analysis.md §17 came from a driver built from the patched copy.
+#
+#   apply with:  git apply docs/t6-cowdata-4.6.patch     (from the repository root)
+#
+# Verified: 3 full-grid passes, 16 cells, one frozen driver. The four 4.6.3 cells go from deriving
+# nothing to 11/12 clean cell-runs; the 4.3/4.4.1/4.5 cells are unchanged against a same-machine
+# baseline run with the unpatched driver.
+
+--- a/src/Godot.External.Calibrator/Calibration/GodotText.cs
++++ b/src/Godot.External.Calibrator/Calibration/GodotText.cs
+@@ -10,15 +10,169 @@
+ /// Godot string decoding, over a candidate offset rather than a profile.
+ /// </summary>
+ /// <remarks>
+-/// The decoding itself is <c>Godot.External</c>'s — <c>CowData</c> length read at <c>buf - 8</c>,
+-/// one bulk read of <c>len * 4</c> bytes, proper UTF-32 with surrogate pairs. §4.6 found scry
+-/// truncating <c>char32_t</c> to a byte on both its string paths, silently, so the decoder is
+-/// exactly the thing not to reimplement here.
++/// <para>
++/// The decoding itself is <c>Godot.External</c>'s — <c>CowData</c> length read at
++/// <c>buf - CowDataSizeBackOffset</c>, one bulk read of <c>len * 4</c> bytes, proper UTF-32 with
++/// surrogate pairs. §4.6 found scry truncating <c>char32_t</c> to a byte on both its string paths,
++/// silently, so the decoder is exactly the thing not to reimplement here.
++/// </para>
++/// <para>
++/// <b>The distance back to the length is not a constant across engine versions, and pretending it
++/// was cost a whole version.</b> Through 4.5 the <c>CowData</c> header is
++/// <c>[refcount][size][data]</c> with the data pointer 16 bytes in, so the element count sits at
++/// <c>buf - 8</c>. Godot 4.6 inserts a <c>capacity</c> field
++/// (<c>core/templates/cowdata.h</c>: <c>REF_COUNT_OFFSET / CAPACITY_OFFSET / SIZE_OFFSET /
++/// DATA_OFFSET</c>) and re-aligns the payload to <c>Memory::MAX_ALIGN</c>, which on the toolchain
++/// the official Windows templates are built with is 16 — so the header is 32 bytes and the count
++/// moves to <c>buf - 16</c>. A hardcoded 8 therefore reads the trailing padding on 4.6, every
++/// string fails to decode, and the calibrator reports "found no StringName slot" for a name that is
++/// plainly present in memory.
++/// </para>
++/// <para>
++/// So it is <b>derived</b>, from buffers whose text — and therefore whose element count — the
++/// harness already stated. See <see cref="TryDeriveSizeBackOffset"/>. The default is only what
++/// applies until a derivation runs.
++/// </para>
+ /// </remarks>
+ public static class GodotText
+ {
++    /// <summary>
++    /// The distance that applied on every version this project measured before 4.6. It is the
++    /// starting value, not an assumption anything is allowed to keep: <see cref="TryDeriveSizeBackOffset"/>
++    /// replaces it from the target.
++    /// </summary>
++    public const int DefaultCowDataSizeBackOffset = 8;
++
++    /// <summary>Distances a derivation will consider, in bytes back from the buffer pointer.</summary>
++    public static readonly int[] CandidateSizeBackOffsets = [8, 16, 24, 32];
++
++    private static int _cowDataSizeBackOffset = DefaultCowDataSizeBackOffset;
++
+     /// <summary>Distance back from a CowData buffer pointer to its element count, on x64.</summary>
+-    public const int CowDataSizeBackOffset = 8;
++    public static int CowDataSizeBackOffset => _cowDataSizeBackOffset;
++
++    /// <summary>True once <see cref="TryDeriveSizeBackOffset"/> has replaced the default.</summary>
++    public static bool CowDataSizeBackOffsetWasDerived { get; private set; }
++
++    /// <summary>
++    /// Derives the CowData buffer → element-count distance from character buffers whose text is
++    /// already known, and adopts it.
++    /// </summary>
++    /// <remarks>
++    /// <para>
++    /// The input is raw byte-scan hits: addresses at which the NUL-terminated UTF-32 of a known name
++    /// occurs. No layout is assumed to produce them, which is what makes them usable to establish
++    /// one. A real <c>CowData&lt;char32_t&gt;</c> buffer holding <c>"AlphaPanel"</c> has the value
++    /// <c>11</c> somewhere in the header in front of it; a copy of those bytes sitting in a resource
++    /// blob does not.
++    /// </para>
++    /// <para>
++    /// <b>Two names, not one.</b> A single length is matched by any header field that happens to hold
++    /// that number, and small integers are everywhere. Requiring the same distance to explain names
++    /// of <em>different lengths</em> is what makes the answer a measurement: <c>12</c> in front of
++    /// <c>"RootHarness"</c> and <c>11</c> in front of <c>"AlphaPanel"</c> at the same displacement is
++    /// the size field and nothing else is. A distance supported by only one name, or two distances
++    /// with equal support, is refused rather than resolved by preference.
++    /// </para>
++    /// </remarks>
++    /// <param name="reader">Target memory.</param>
++    /// <param name="buffersByName">Raw scan hits per known name.</param>
++    /// <param name="derived">The adopted distance, when this returns true.</param>
++    /// <param name="reason">What was measured, or why nothing was adopted.</param>
++    public static bool TryDeriveSizeBackOffset(
++        IMemoryReader reader,
++        IReadOnlyDictionary<string, IReadOnlyList<ulong>> buffersByName,
++        out int derived,
++        out string reason)
++    {
++        ArgumentNullException.ThrowIfNull(reader);
++        ArgumentNullException.ThrowIfNull(buffersByName);
++
++        derived = DefaultCowDataSizeBackOffset;
++
++        // For each candidate distance: which of the supplied names had at least one buffer whose
++        // header held exactly that name's element count there.
++        Dictionary<int, HashSet<string>> namesExplained = [];
++        Dictionary<int, int> buffersExplained = [];
++
++        foreach ((string name, IReadOnlyList<ulong> buffers) in buffersByName)
++        {
++            ulong expected = (ulong)name.Length + 1;   // CowData<char32_t> counts the NUL
++            foreach (ulong buffer in buffers)
++            {
++                foreach (int back in CandidateSizeBackOffsets)
++                {
++                    if (buffer < (ulong)back || !reader.TryReadPointer(buffer - (ulong)back, out ulong value))
++                    {
++                        continue;
++                    }
++
++                    if (value != expected)
++                    {
++                        continue;
++                    }
++
++                    if (!namesExplained.TryGetValue(back, out HashSet<string>? names))
++                    {
++                        names = [];
++                        namesExplained[back] = names;
++                    }
++
++                    names.Add(name);
++                    buffersExplained[back] = buffersExplained.GetValueOrDefault(back) + 1;
++                }
++            }
++        }
++
++        // Distinct LENGTHS, not distinct names: two names of the same length prove nothing a single
++        // one did not, and the whole point of the second name is that its count is a different
++        // number.
++        static int DistinctLengths(HashSet<string> names) => names.Select(n => n.Length).Distinct().Count();
++
++        List<int> best = [.. namesExplained
++            .Where(kv => DistinctLengths(kv.Value) >= 2)
++            .OrderByDescending(kv => DistinctLengths(kv.Value))
++            .ThenByDescending(kv => buffersExplained[kv.Key])
++            .Select(kv => kv.Key)];
++
++        if (best.Count == 0)
++        {
++            reason = "CowData size distance: no displacement in "
++                + $"{{{string.Join(", ", CandidateSizeBackOffsets.Select(b => $"-0x{b:x}"))}}} held the element count "
++                + $"for two names of different lengths across {buffersByName.Sum(kv => kv.Value.Count)} raw buffer hit(s); "
++                + $"keeping the default -0x{DefaultCowDataSizeBackOffset:x}.";
++            return false;
++        }
++
++        if (best.Count > 1
++            && DistinctLengths(namesExplained[best[0]]) == DistinctLengths(namesExplained[best[1]])
++            && buffersExplained[best[0]] == buffersExplained[best[1]])
++        {
++            reason = $"CowData size distance: -0x{best[0]:x} and -0x{best[1]:x} are equally well supported, "
++                + "which is ambiguous rather than resolvable; keeping the default "
++                + $"-0x{DefaultCowDataSizeBackOffset:x}.";
++            return false;
++        }
++
++        derived = best[0];
++        _cowDataSizeBackOffset = derived;
++        CowDataSizeBackOffsetWasDerived = true;
++        reason = $"CowData element count is at buffer-0x{derived:x}, derived from "
++            + $"{DistinctLengths(namesExplained[derived])} name(s) of different lengths over "
++            + $"{buffersExplained[derived]} buffer(s)"
++            + (derived == DefaultCowDataSizeBackOffset
++                ? " (the 4.2-4.5 header: refcount, size, data)."
++                : " — NOT the pre-4.6 -0x8; Godot 4.6's CowData header carries a capacity field and "
++                  + "aligns the payload to Memory::MAX_ALIGN.");
++        return true;
++    }
++
++    /// <summary>Resets the derived distance. For tests, and for a second target in one process.</summary>
++    public static void ResetSizeBackOffset()
++    {
++        _cowDataSizeBackOffset = DefaultCowDataSizeBackOffset;
++        CowDataSizeBackOffsetWasDerived = false;
++    }
+ 
+     /// <summary>Decodes the <c>String</c> whose CowData buffer pointer is stored at a field address.</summary>
+     public static bool TryReadStringField(IMemoryReader reader, ulong fieldAddress, out string value)
+--- a/src/Godot.External.Calibrator/Calibration/TextCalibrator.cs
++++ b/src/Godot.External.Calibrator/Calibration/TextCalibrator.cs
+@@ -63,11 +63,29 @@
+     /// <summary>Longest string treated as real UI text rather than a misread pointer.</summary>
+     public const int MaxLength = 4096;
+ 
+-    /// <summary>Distance from a CowData data pointer back to its size field (§4.6).</summary>
+-    public const int SizeOffset = 8;
++    /// <summary>
++    /// Distance from a CowData data pointer back to its size field — <b>derived per target</b>, not
++    /// a constant.
++    /// </summary>
++    /// <remarks>
++    /// It was a constant 8 here, and that was true for 4.2–4.5 and false for 4.6, where
++    /// <c>cowdata.h</c> inserts a <c>capacity</c> field ahead of the size and re-aligns the payload.
++    /// See <see cref="GodotText.TryDeriveSizeBackOffset"/>, which measures it from name buffers the
++    /// harness already identified; this property only follows what that measured.
++    /// </remarks>
++    public static int SizeOffset => GodotText.CowDataSizeBackOffset;
+ 
+     /// <summary>Distance from a CowData data pointer back to its reference count.</summary>
+-    public const int RefCountOffset = 16;
++    /// <remarks>
++    /// The reference count is the <em>first</em> member of the header
++    /// (<c>cowdata.h: REF_COUNT_OFFSET = 0</c>), so this distance is the whole header size, which
++    /// <c>cowdata.h</c> computes as the size field's offset plus <c>sizeof(USize)</c> rounded up to
++    /// <c>Memory::MAX_ALIGN</c> (16 on the toolchain the official Windows templates are built with).
++    /// That reproduces both measurements from the one derived number: 16 when the size sits at
++    /// <c>-8</c> (4.2–4.5, header <c>[refcount][size]</c>) and 32 when it sits at <c>-0x10</c>
++    /// (4.6, header <c>[refcount][capacity][size][pad]</c>).
++    /// </remarks>
++    public static int RefCountOffset => (SizeOffset + 8 + 15) & ~15;
+ 
+     /// <summary>Discovers and classifies every valid string field on the given nodes.</summary>
+     public static TextFieldSet Discover(
+@@ -139,7 +157,7 @@
+             return false;
+         }
+ 
+-        if (!TryReadUInt64(reader, pointer - SizeOffset, out ulong size)
++        if (!TryReadUInt64(reader, pointer - (ulong)SizeOffset, out ulong size)
+             || size < 1
+             || size > MaxElements
+             || size > MaxLength)
+@@ -147,7 +165,7 @@
+             return false;
+         }
+ 
+-        if (!TryReadUInt64(reader, pointer - RefCountOffset, out ulong refCount) || refCount < 1 || refCount > MaxElements)
++        if (!TryReadUInt64(reader, pointer - (ulong)RefCountOffset, out ulong refCount) || refCount < 1 || refCount > MaxElements)
+         {
+             return false;
+         }
+--- a/src/Godot.External.Calibrator/Target/RootLocator.cs
++++ b/src/Godot.External.Calibrator/Target/RootLocator.cs
+@@ -52,6 +52,7 @@
+ 
+     private readonly IMemoryReader _reader = reader ?? throw new ArgumentNullException(nameof(reader));
+     private readonly RegionScanner _scanner = scanner ?? throw new ArgumentNullException(nameof(scanner));
++    private readonly Dictionary<string, IReadOnlyList<ulong>> _rawBuffers = [];
+ 
+     /// <summary>Locates the walk root, or explains what stopped it.</summary>
+     public RootLocation? Locate(
+@@ -72,6 +73,40 @@
+             return null;
+         }
+ 
++        // The CowData header first, because every decode below depends on it and it is NOT the same
++        // on every engine version (GodotText.TryDeriveSizeBackOffset). The raw byte scan that feeds
++        // it assumes no layout at all, which is the only reason it can establish one: a name whose
++        // UTF-32 is in memory has its element count in the header in front of it, wherever that
++        // header happens to start.
++        //
++        // COSTS NO EXTRA SCANNING. Every hit list here is cached in _rawBuffers and reused by
++        // NameSlots below, and names are added only until the derivation succeeds, so the common
++        // case scans the root name and one child — exactly what the search was going to scan anyway.
++        // That matters more than it looks: a whole-process byte scan takes seconds, the target keeps
++        // running throughout, and calibrate.mjs's `settle` note records that the longer it runs the
++        // more decoy copies of the node names its heap holds. Doubling the scan time measurably
++        // increased candidate ties on the gdscript cells.
++        string cowDataReason = "CowData size distance: no name was scanned, so nothing was derived.";
++        foreach (string name in new[] { rootName }.Concat(childNames).Distinct())
++        {
++            RawBuffers(name);
++            if (GodotText.TryDeriveSizeBackOffset(_reader, _rawBuffers, out _, out cowDataReason))
++            {
++                break;
++            }
++        }
++
++        notes.Add(cowDataReason);
++        if (!GodotText.CowDataSizeBackOffsetWasDerived)
++        {
++            // Not fatal: on every version through 4.5 the default is also the right answer, so a
++            // target that refuses to prove it still gets one attempt at the default. What must not
++            // happen is a WRONG distance being adopted silently, which is why the refusal is a note
++            // rather than a substitution.
++            notes.Add("root scan: proceeding with the default CowData size distance; if this target is "
++                    + "4.6 or newer, every string decode below will fail and the scan will report no slots.");
++        }
++
+         IReadOnlyList<NameSlot> rootSlots = NameSlots(rootName);
+         if (rootSlots.Count == 0)
+         {
+@@ -118,9 +153,28 @@
+         return null;
+     }
+ 
++    /// <summary>
++    /// The raw byte-scan hits for one name, scanned at most once per instance.
++    /// </summary>
++    /// <remarks>
++    /// The cache is not an optimisation for its own sake: the CowData derivation and the slot search
++    /// want the same hit lists, and scanning twice would double the time the target spends running
++    /// before it is measured.
++    /// </remarks>
++    private IReadOnlyList<ulong> RawBuffers(string name)
++    {
++        if (!_rawBuffers.TryGetValue(name, out IReadOnlyList<ulong>? buffers))
++        {
++            buffers = _scanner.FindBytes(GodotText.Utf32Needle(name), MaxHits);
++            _rawBuffers[name] = buffers;
++        }
++
++        return buffers;
++    }
++
+     private IReadOnlyList<NameSlot> NameSlots(string name)
+     {
+-        IReadOnlyList<ulong> buffers = _scanner.FindBytes(GodotText.Utf32Needle(name), MaxHits);
++        IReadOnlyList<ulong> buffers = RawBuffers(name);
+         if (buffers.Count == 0)
+         {
+             return [];

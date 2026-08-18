@@ -285,10 +285,16 @@ public sealed class CalibrationSession
         }
 
         _scriptInstanceCandidates = [.. strongest.Select(s => (s.Slot, s.Backref))];
-        _notes.Add(
-            $"node.scriptInstance: {strongest.Count} (slot, owner-backref) pairs each fit, all corroborated by the "
-            + $"same {best} scripted node(s) — too few to separate them by pointer identity. Deferred to the managed "
-            + "bridge, which can settle it by following each candidate's GCHandle.");
+
+        // Deferred, and therefore declared. A deferral that nothing picks up is a withhold, and on a
+        // GDScript cell — or any cell with no managed probe — nothing does: DeriveManagedBridge
+        // declines scriptInstance.gcHandle and returns without ever reaching this key. Declaring it
+        // here and withdrawing the declaration in Build if the bridge settles it is the only ordering
+        // that is honest at both ends; declaring nothing leaves the one outcome that is silent.
+        Decline(OffsetKeys.NodeScriptInstance,
+            $"{strongest.Count} (slot, owner-backref) pairs each fit, all corroborated by the same {best} scripted "
+            + "node(s) — too few to separate them by pointer identity. Deferred to the managed bridge, which can "
+            + "settle it by following each candidate's GCHandle");
     }
 
     private List<(int Slot, int Backref, OffsetCandidates Candidates)> SolveScriptInstance(IReadOnlyList<ulong> nodes)
@@ -588,9 +594,13 @@ public sealed class CalibrationSession
             && !_offsets.ContainsKey(OffsetKeys.ControlOffset)
             && !_offsets.ContainsKey(OffsetKeys.CanvasItemVisible))
         {
-            _notes.Add("strings: no CanvasItem or Control member was derived, so there is no floor under which "
-                     + "to reject Node-header strings. Text is withheld unconditionally rather than scanned "
-                     + "from offset zero.");
+            foreach (string key in new[] { OffsetKeys.LabelText, OffsetKeys.RichTextLabelText })
+            {
+                Decline(key,
+                    "no CanvasItem or Control member was derived, so there is no floor under which to reject "
+                    + "Node-header strings. Text is withheld unconditionally rather than scanned from offset zero");
+            }
+
             return;
         }
 
@@ -611,15 +621,16 @@ public sealed class CalibrationSession
 
         if (labelPool.Count == 0)
         {
-            _notes.Add("label.text: no offset above the derived Node/Control members matched Godot's Label "
-                     + "layout (String text with String xl_text after it, alignment enums behind, autowrap "
-                     + "ahead). Withheld.");
+            Decline(OffsetKeys.LabelText,
+                "no offset above the derived Node/Control members matched Godot's Label layout (String text with "
+                + "String xl_text after it, alignment enums behind, autowrap ahead)");
         }
 
         if (richPool.Count == 0)
         {
-            _notes.Add("richTextLabel.text: no offset above the derived Node/Control members matched Godot's "
-                     + "RichTextLabel layout (use_bbcode behind, bools ahead, and NO xl_text). Withheld.");
+            Decline(OffsetKeys.RichTextLabelText,
+                "no offset above the derived Node/Control members matched Godot's RichTextLabel layout "
+                + "(use_bbcode behind, bools ahead, and NO xl_text)");
         }
 
         // The two classes are disjoint — a Label is not a RichTextLabel — so whatever the Label class
@@ -807,9 +818,9 @@ public sealed class CalibrationSession
             // case that matters — a real Control of the wrong class — because it structurally
             // cannot: the walk root IS a Control, and so is a Label. A fallback that fires when the
             // least is known is the same mistake as the text fallback retired two rounds ago.
-            _notes.Add($"{key}: the engine's class names could not be derived on this build, so there is no way to "
-                     + "tell a Label from any other Control. Text is withheld entirely rather than guessed at "
-                     + "from geometry.");
+            Decline(key,
+                "the engine's class names could not be derived on this build, so there is no way to tell a Label "
+                + "from any other Control. Text is withheld entirely rather than guessed at from geometry");
             return [];
         }
 
@@ -823,16 +834,17 @@ public sealed class CalibrationSession
         // wrong repeatedly, so it is withheld until something independent can corroborate it.
         if (instances.Count == 1)
         {
-            _notes.Add($"{key}: the scene contains exactly ONE node of class \"{className}\", so requiring the "
-                     + "decode-set to lie inside the class-set constrains nothing at all — any string-shaped field "
-                     + "on that node satisfies it. Withheld for want of a second, independent signal.");
+            Decline(key,
+                $"the scene contains exactly ONE node of class \"{className}\", so requiring the decode-set to lie "
+                + "inside the class-set constrains nothing at all — any string-shaped field on that node satisfies "
+                + "it. Withheld for want of a second, independent signal");
             return [];
         }
 
         if (instances.Count == 0)
         {
-            _notes.Add($"{key}: the walk contains no node of class \"{className}\", so there is no such field to "
-                     + "derive here.");
+            Decline(key,
+                $"the walk contains no node of class \"{className}\", so there is no such field to derive here");
             return [];
         }
 
@@ -936,9 +948,9 @@ public sealed class CalibrationSession
 
         if (largest.Count > 1)
         {
-            _notes.Add($"{key}: {largest.Count} equally large groups of string offsets cover DIFFERENT node sets, "
-                     + "so which one is the class is undecided. No offset is reported AND no text is read "
-                     + "through these candidates.");
+            Decline(key,
+                $"{largest.Count} equally large groups of string offsets cover DIFFERENT node sets, so which one "
+                + "is the class is undecided. No offset is reported AND no text is read through these candidates");
             return [];
         }
 
@@ -958,10 +970,14 @@ public sealed class CalibrationSession
 
             if (byValue.Count > 1 && byValue[0].Count() == byValue[1].Count())
             {
-                _notes.Add($"{key}: candidates split evenly on node {Wire.Pointer(node)}, with nothing to prefer "
-                         + "between them, so no class offset is reported and NO text is read through these "
-                         + "candidates — "
-                         + string.Join(", ", sameClass.Select(f => $"{Wire.Offset(f.Offset)}=\"{f.Values[node]}\"")));
+                // The tie itself is REPORTED, not resolved. Runs 1 and 2 derive this key correctly and
+                // byte-identically; run 3 splits, and §13.11 records three separate occasions on which
+                // a discriminator added to break a tie like this was itself wrong. So the reason names
+                // the node and every candidate's reading, and stops there.
+                Decline(key,
+                    $"candidates split evenly on node {Wire.Pointer(node)}, with nothing to prefer between them, "
+                    + "so no class offset is reported and NO text is read through these candidates — "
+                    + string.Join(", ", sameClass.Select(f => $"{Wire.Offset(f.Offset)}=\"{f.Values[node]}\"")));
                 return [];
             }
 
@@ -1069,6 +1085,16 @@ public sealed class CalibrationSession
                 }
 
                 Record(OffsetKeys.ScriptInstanceGcHandle, gcHandleOffset);
+
+                // Only the chain that WON gets its refusals published. The loop above rejects most
+                // candidates on type name alone, and a note per rejected candidate would bury the
+                // one account that matters under a hundred that describe objects this run already
+                // decided were not the bridge.
+                foreach (string refusal in info.FieldRefusals ?? [])
+                {
+                    _notes.Add($"bridge.managed: {refusal}");
+                }
+
                 _notes.Add(
                     "bridge.managed: the managed object was reached from the NATIVE side (node -> ScriptInstance -> "
                     + "GCHandle) and its type confirmed against the name the harness supplied. The static field slot "
@@ -1279,10 +1305,23 @@ public sealed class CalibrationSession
     private void Record(string key, int offset) => _offsets[key] = offset;
 
     /// <summary>Declares an offset deliberately not derived, with the reason.</summary>
+    /// <remarks>
+    /// <b>The first refusal is the declared one.</b> A withhold is often re-observed further down the
+    /// pipeline in more general terms — <see cref="OfClass"/> refuses <c>richTextLabel.text</c>
+    /// because the class has a single member, and the empty-pool branch a few lines later refuses the
+    /// same key as "nothing matched the layout" — and the reason nearest the actual refusal is the
+    /// operative one. Letting the later, broader observation overwrite it would have the driver
+    /// declaring a cause that is true and is not the one that stopped it, which is the specific way
+    /// this change can be got wrong. Every observation still appears in the notes.
+    /// </remarks>
     private void Decline(string key, string reason)
     {
-        _notDerived[key] = reason;
         _notes.Add($"{key}: not derived — {reason}");
+
+        if (!_notDerived.ContainsKey(key))
+        {
+            _notDerived[key] = reason;
+        }
     }
 
     private void Publish(string key, OffsetCandidates result, Dictionary<string, string>? evidence, string? evidenceText)
@@ -1301,7 +1340,20 @@ public sealed class CalibrationSession
             return;
         }
 
-        _notes.Add($"{key}: not derived — {result.Obstacle()}.");
+        // Declared, not merely mentioned.
+        //
+        // This branch used to write the note and stop, so `derivation.notDerived` stayed empty and
+        // the withhold was invisible to the harness — which cannot tell "I looked and refused" from
+        // "I never tried", and correctly scores the second. `control.anchor` and
+        // `control.globalPosition` have always declared themselves because they are refused in one
+        // fixed place; this branch refuses whenever the evidence happens not to resolve, which is
+        // exactly when the driver is the only party that knows why.
+        //
+        // The reason is the obstacle the candidate set actually presents — the surviving offsets, or
+        // the samples that were short — and not a summary of it. Naming a plausible-sounding cause
+        // instead of the real one would leave the tie unreported, which is the failure this is
+        // supposed to expose.
+        Decline(key, result.Obstacle());
     }
 
     private DriverResult Build(int walkCount, IReadOnlyList<NodeRecord> nodes, ManagedBridgeResult? bridge)
@@ -1309,13 +1361,22 @@ public sealed class CalibrationSession
         Dictionary<string, string> Group(params string[] keys)
             => keys.Where(_offsets.ContainsKey).ToDictionary(k => k, k => Wire.Offset(_offsets[k]));
 
+        // A key declined by one pass and settled by a later one must not claim both.
+        // node.scriptInstance is the live case: pointer identity alone cannot separate its candidates
+        // on a scene where only the root is scripted, so it is declined there, and the managed bridge
+        // then settles it by following each candidate to a managed object of the expected type.
+        // Leaving the stale declaration in would have the driver excusing itself from a comparison it
+        // did in fact earn.
+        Dictionary<string, string> notDerived =
+            _notDerived.Where(kv => !_offsets.ContainsKey(kv.Key)).ToDictionary(kv => kv.Key, kv => kv.Value);
+
         return new DriverResult
         {
             EngineVersion = _request.EngineVersion,
             WalkCount = walkCount,
             Derivation = new Derivation
             {
-                NotDerived = _notDerived,
+                NotDerived = notDerived,
                 Structural = new StructuralDerivation
                 {
                     Offsets = Group(OffsetKeys.NodeParent, OffsetKeys.NodeChildListHead, OffsetKeys.NodeScriptInstance),

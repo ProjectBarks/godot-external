@@ -63,6 +63,13 @@ export const FAULTS = {
   'mangle-internal-name': 'rename an engine-internal child the authored scene never mentions',
   'mangle-name': 'report a plausible but wrong name for one authored node',
   'partial-anchors': 'publish correct anchor quads on only half the Controls',
+  // The merge hole. Every site that wanted the derived offsets as one flat record spread the three
+  // groups together, and a spread keeps the LAST mention of a duplicated key — so a driver that
+  // reported one key twice had one of its two answers dropped with no complaint anywhere. This
+  // reports node.name in `structural` as well as `strings` with the two values EIGHT APART, which is
+  // the shape a real confusion would take (§4.6/§12.7's debug/release delta), and label.text twice
+  // with the same value, which is benign and must be disclosed rather than scored.
+  'offset-group-collision': 'report node.name in two derivation groups with different values, and label.text in two with the same one',
 };
 
 function fakePtr(index) {
@@ -343,6 +350,14 @@ export async function run(request) {
           'node.parent': offsets['node.parent'],
           'node.childListHead': offsets['node.childListHead'],
           'node.scriptInstance': offsets['node.scriptInstance'],
+          // Both of these belong to `strings` and are reported there too, a few lines below. The
+          // conflicting one is FIRST here on purpose: a spread merge keeps the last group, so the
+          // strings copy silently won and the harness saw only the correct value — which is exactly
+          // why nothing ever noticed. The readings stay correct throughout, like flat-offsets: this
+          // fault is about the offsets the driver publishes, not about what it reads with them.
+          ...(faults.has('offset-group-collision')
+            ? { 'node.name': offsets['node.name'] + 8, 'label.text': offsets['label.text'] }
+            : {}),
         },
         evidence: {
           childListHead: 'only slot p where *(p+0x18) is a known child pointer',

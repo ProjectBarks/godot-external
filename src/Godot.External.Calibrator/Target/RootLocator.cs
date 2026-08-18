@@ -52,6 +52,7 @@ public sealed class RootLocator(IMemoryReader reader, RegionScanner scanner)
 
     private readonly IMemoryReader _reader = reader ?? throw new ArgumentNullException(nameof(reader));
     private readonly RegionScanner _scanner = scanner ?? throw new ArgumentNullException(nameof(scanner));
+    private readonly Dictionary<string, IReadOnlyList<ulong>> _rawBuffers = [];
 
     /// <summary>Locates the walk root, or explains what stopped it.</summary>
     public RootLocation? Locate(
@@ -70,6 +71,40 @@ public sealed class RootLocator(IMemoryReader reader, RegionScanner scanner)
             notes.Add("root scan: the request revealed no child of the walk root, and one known parent/child pair "
                     + "is the minimum the pointer-identity solve needs.");
             return null;
+        }
+
+        // The CowData header first, because every decode below depends on it and it is NOT the same
+        // on every engine version (GodotText.TryDeriveSizeBackOffset). The raw byte scan that feeds
+        // it assumes no layout at all, which is the only reason it can establish one: a name whose
+        // UTF-32 is in memory has its element count in the header in front of it, wherever that
+        // header happens to start.
+        //
+        // COSTS NO EXTRA SCANNING. Every hit list here is cached in _rawBuffers and reused by
+        // NameSlots below, and names are added only until the derivation succeeds, so the common
+        // case scans the root name and one child — exactly what the search was going to scan anyway.
+        // That matters more than it looks: a whole-process byte scan takes seconds, the target keeps
+        // running throughout, and calibrate.mjs's `settle` note records that the longer it runs the
+        // more decoy copies of the node names its heap holds. Doubling the scan time measurably
+        // increased candidate ties on the gdscript cells.
+        string cowDataReason = "CowData size distance: no name was scanned, so nothing was derived.";
+        foreach (string name in new[] { rootName }.Concat(childNames).Distinct())
+        {
+            RawBuffers(name);
+            if (GodotText.TryDeriveSizeBackOffset(_reader, _rawBuffers, out _, out cowDataReason))
+            {
+                break;
+            }
+        }
+
+        notes.Add(cowDataReason);
+        if (!GodotText.CowDataSizeBackOffsetWasDerived)
+        {
+            // Not fatal: on every version through 4.5 the default is also the right answer, so a
+            // target that refuses to prove it still gets one attempt at the default. What must not
+            // happen is a WRONG distance being adopted silently, which is why the refusal is a note
+            // rather than a substitution.
+            notes.Add("root scan: proceeding with the default CowData size distance; if this target is "
+                    + "4.6 or newer, every string decode below will fail and the scan will report no slots.");
         }
 
         IReadOnlyList<NameSlot> rootSlots = NameSlots(rootName);
@@ -118,9 +153,28 @@ public sealed class RootLocator(IMemoryReader reader, RegionScanner scanner)
         return null;
     }
 
+    /// <summary>
+    /// The raw byte-scan hits for one name, scanned at most once per instance.
+    /// </summary>
+    /// <remarks>
+    /// The cache is not an optimisation for its own sake: the CowData derivation and the slot search
+    /// want the same hit lists, and scanning twice would double the time the target spends running
+    /// before it is measured.
+    /// </remarks>
+    private IReadOnlyList<ulong> RawBuffers(string name)
+    {
+        if (!_rawBuffers.TryGetValue(name, out IReadOnlyList<ulong>? buffers))
+        {
+            buffers = _scanner.FindBytes(GodotText.Utf32Needle(name), MaxHits);
+            _rawBuffers[name] = buffers;
+        }
+
+        return buffers;
+    }
+
     private IReadOnlyList<NameSlot> NameSlots(string name)
     {
-        IReadOnlyList<ulong> buffers = _scanner.FindBytes(GodotText.Utf32Needle(name), MaxHits);
+        IReadOnlyList<ulong> buffers = RawBuffers(name);
         if (buffers.Count == 0)
         {
             return [];

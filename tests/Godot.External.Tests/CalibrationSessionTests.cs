@@ -212,6 +212,77 @@ public sealed class CalibrationSessionTests
     }
 
     [Fact]
+    public void EveryTypeOfManagedFieldTheProbeReadsIsPublishedUnchanged()
+    {
+        GridSceneMemory memory = new();
+        FakeManagedProbe probe = new(memory.ManagedObject, memory.Root);
+        DriverResult result = new CalibrationSession(memory, GridScene.Request(), probe).Run(memory.Root);
+
+        // `managedBridge.fields` was `{}` in all 224 historical results: the bridge resolved the
+        // managed object and read nothing off it. Reading a value out of that object is the only
+        // thing that demonstrates it is the RIGHT object rather than a pointer that compares equal,
+        // and an int32 published as an int64 is the confusion this set is shaped to catch — so the
+        // session must pass every value through with its type intact, not stringify or round them.
+        IReadOnlyDictionary<string, object?> fields = result.ManagedBridge!.Fields!;
+        Assert.Equal("héllo ✦ 日本語", fields["ProbeUnicode"]);
+        Assert.Equal(613227, fields["ProbeInt32"]);
+        Assert.Equal(887313409151L, fields["ProbeInt64"]);
+        Assert.Equal(40.9151f, fields["ProbeFloat"]);
+        Assert.Equal(true, fields["ProbeBool"]);
+    }
+
+    [Fact]
+    public void AnOffsetDeclinedByOnePassAndSettledByTheNextIsNotStillDeclaredUnderived()
+    {
+        GridSceneMemory memory = new(decoyScriptInstance: true);
+        FakeManagedProbe probe = new(memory.ManagedObject, memory.Root);
+        DriverResult result = new CalibrationSession(memory, GridScene.Request(), probe).Run(memory.Root);
+
+        // Pointer identity alone cannot separate the decoy from the real ScriptInstance, so the
+        // structural pass declines node.scriptInstance; the managed bridge then settles it by
+        // following each candidate to a managed object of the expected type. Both statements were
+        // then true at once, and "I did not derive this" is not a thing a driver may say about an
+        // offset it went on to publish.
+        Assert.True(result.Derivation.Structural.Offsets.ContainsKey(OffsetKeys.NodeScriptInstance),
+            "the managed bridge did not settle node.scriptInstance, so this test proves nothing");
+        Assert.DoesNotContain(OffsetKeys.NodeScriptInstance, result.Derivation.NotDerived.Keys);
+    }
+
+    [Fact]
+    public void ADeferralNothingPicksUpIsDeclaredRatherThanLeftSilent()
+    {
+        // The same ambiguity, with no managed probe to settle it — a GDScript cell, or a .NET one the
+        // CLR could not be attached to. The deferral note said "deferred to the managed bridge" and
+        // nothing ever came back, so the key went absent and unremarked: the exact shape a comparison
+        // cannot interpret.
+        GridSceneMemory memory = new(decoyScriptInstance: true);
+        DriverResult result = new CalibrationSession(memory, GridScene.Request()).Run(memory.Root);
+
+        Assert.False(result.Derivation.Structural.Offsets.ContainsKey(OffsetKeys.NodeScriptInstance),
+            "node.scriptInstance resolved without the bridge, so this test proves nothing");
+        Assert.True(result.Derivation.NotDerived.ContainsKey(OffsetKeys.NodeScriptInstance),
+            "an unsettled deferral left node.scriptInstance absent and unexplained");
+        Assert.Contains("too few to separate them by pointer identity",
+            result.Derivation.NotDerived[OffsetKeys.NodeScriptInstance], StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AManagedFieldTheProbeCouldNotReadIsExplainedRatherThanOmitted()
+    {
+        GridSceneMemory memory = new();
+        FakeManagedProbe probe = new(memory.ManagedObject, memory.Root) { RefuseInt64 = true };
+        DriverResult result = new CalibrationSession(memory, GridScene.Request(), probe).Run(memory.Root);
+
+        // Same argument as derivation.notDerived, one layer down. A field missing from `fields` with
+        // nothing said about it is indistinguishable from a field nobody asked for — which is exactly
+        // the state the bridge was in while it silently read none of the six.
+        Assert.False(result.ManagedBridge!.Fields!.ContainsKey("ProbeInt64"));
+        Assert.Contains(result.Notes,
+            n => n.Contains("bridge.managed: ProbeInt64:", StringComparison.Ordinal)
+              && n.Contains("declared System.Int64", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void ReportsNothingWhenTheRootIsNotWhereItWasSaidToBe()
     {
         GridSceneMemory memory = new();
@@ -230,6 +301,9 @@ public sealed class CalibrationSessionTests
     /// </summary>
     private sealed class FakeManagedProbe(ulong managedObject, ulong nativePtr) : IManagedProbe
     {
+        /// <summary>Stands in for a slot the real probe declined to read at a guessed width.</summary>
+        public bool RefuseInt64 { get; init; }
+
         public bool TryDescribe(ulong address, IReadOnlyList<string> fieldNames, out ManagedObjectInfo info)
         {
             info = new ManagedObjectInfo(string.Empty, 0, new Dictionary<string, object?>());
@@ -238,10 +312,27 @@ public sealed class CalibrationSessionTests
                 return false;
             }
 
-            info = new ManagedObjectInfo(
-                "Probe",
-                nativePtr,
-                new Dictionary<string, object?> { ["ProbeAscii"] = "GridProbe ASCII 0123" });
+            // The six values Probe.cs authors, at the widths it declares them. A calibrator that
+            // published ProbeInt32 as a long, or a float as a double, would be reporting a plausible
+            // wrong number rather than failing, so the types travel with the values.
+            Dictionary<string, object?> fields = new()
+            {
+                ["ProbeAscii"] = "GridProbe ASCII 0123",
+                ["ProbeUnicode"] = "héllo ✦ 日本語",
+                ["ProbeInt32"] = 613227,
+                ["ProbeInt64"] = 887313409151L,
+                ["ProbeFloat"] = 40.9151f,
+                ["ProbeBool"] = true,
+            };
+
+            List<string> refusals = [];
+            if (RefuseInt64)
+            {
+                fields.Remove("ProbeInt64");
+                refusals.Add("ProbeInt64: declared System.Int64, but the slot at 0x0 could not be read");
+            }
+
+            info = new ManagedObjectInfo("Probe", nativePtr, fields, refusals);
             return true;
         }
     }

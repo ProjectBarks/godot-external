@@ -130,6 +130,80 @@ export function normaliseResult(raw) {
 }
 
 /**
+ * Merge the three derivation groups into one `key -> offset` map WITHOUT letting a later group
+ * silently overwrite an earlier one.
+ *
+ * Every site that wanted the driver's derived offsets as a flat record wrote
+ * `{ ...structural.offsets, ...semantic.offsets, ...strings.offsets }`, and spread merging resolves
+ * a duplicate key by keeping the LAST one. So a driver reporting one key in two groups had one of
+ * its two answers discarded, and nothing anywhere said which — or that there had been two. An audit
+ * injected `node.name` into `structural.offsets` and the untouched `strings.offsets` copy overwrote
+ * it; `offsets.internal_consistency` passed, correctly, because the surviving value was still right.
+ * Nothing would have said so had they differed. That is the §13.11 shape exactly: not a wrong
+ * answer, a question that could not come out any way but one.
+ *
+ * So the merge now REPORTS what it merged:
+ *   - `conflicts` — the same key claimed by two groups with DIFFERENT values. Which one a spread
+ *     happens to keep is an artefact of the order the three groups are written in this file, so any
+ *     number derived from it is arbitrary. Scored as a failure by both callers.
+ *   - `duplicates` — the same key claimed twice with the SAME value. Benign: the merge is
+ *     unambiguous whichever way it goes. Disclosed rather than scored, because a driver that reports
+ *     one offset in two groups is at minimum sloppy and that should be visible in the detail line
+ *     rather than absorbed.
+ *
+ * A group carrying the key with a null/undefined value is NOT a claim — the whole file already
+ * reads absence that way (`missing` in profile.agreement, the `=== null || === undefined` guards in
+ * every check above) — so it neither conflicts nor duplicates. It also cannot mask a real value: the
+ * merged map takes the first NON-NULL claim, and falls back to null only if that is all there was.
+ */
+export function mergeDerivationGroups(result) {
+  const groups = [
+    ['derivation.structural.offsets', result.structural?.offsets],
+    ['derivation.semantic.offsets', result.semantic?.offsets],
+    ['derivation.strings.offsets', result.strings?.offsets],
+  ];
+
+  const merged = {};
+  const claims = new Map();
+  for (const [group, offsets] of groups) {
+    for (const [key, off] of Object.entries(offsets ?? {})) {
+      if (!Object.hasOwn(merged, key) || merged[key] === null || merged[key] === undefined) {
+        merged[key] = off;
+      }
+      if (off === null || off === undefined) continue;
+      if (!claims.has(key)) claims.set(key, []);
+      claims.get(key).push({ group, off });
+    }
+  }
+
+  const conflicts = [];
+  const duplicates = [];
+  for (const [key, reports] of claims) {
+    if (reports.length < 2) continue;
+    const where = reports.map((r) => `${r.group}=${hex(r.off)}`).join(', ');
+    if (new Set(reports.map((r) => r.off)).size > 1) {
+      conflicts.push({
+        key,
+        reports,
+        text: `${key} is claimed by ${reports.length} derivation groups with different values (${where})`,
+      });
+    } else {
+      duplicates.push({ key, reports, text: `${key} = ${hex(reports[0].off)} in ${reports.map((r) => r.group).join(' and ')}` });
+    }
+  }
+
+  return { merged, conflicts, duplicates };
+}
+
+/** The paragraph both callers print when a key is claimed twice with two different values. */
+const COLLISION_PROSE =
+  '\n    A spread merge keeps the LAST group that mentions a key, so exactly one of these values was\n'
+  + '    being used and the other was discarded without a word. Which one survives is decided by the\n'
+  + '    order the groups happen to be written in lib/checks.mjs, not by anything about the driver, so\n'
+  + '    every number downstream of this key is arbitrary. The driver must report each offset in the\n'
+  + '    one group whose METHOD derived it.';
+
+/**
  * Rebuild every node's tree path from parentPtr links ALONE. This is not a
  * convenience: reconstructing the path from pointers is how the harness avoids
  * trusting a driver's own idea of the hierarchy. If the parent offset is wrong,
@@ -628,7 +702,27 @@ function checkOffsetConsistency(cell, result) {
   const id = 'offsets.internal_consistency';
   const title = '(f) derived offsets are mutually consistent with the class hierarchy';
 
-  const derived = { ...result.structural.offsets, ...result.semantic.offsets, ...result.strings.offsets };
+  const { merged: derived, conflicts, duplicates } = mergeDerivationGroups(result);
+
+  // Disclosed on EVERY outcome, pass or fail. A key reported twice with the same value is not a
+  // defect in the layout, but it is a driver that does not know which of its own methods derived
+  // what, and absorbing that silently is how the conflicting case stayed invisible.
+  const dupNote = duplicates.length
+    ? `\n    NOTE: ${duplicates.length} key(s) were reported by more than one derivation group with IDENTICAL`
+      + `\n    values, so the merge is unambiguous and nothing here is affected: ${duplicates.map((d) => d.text).join('; ')}.`
+      + '\n    Reporting one offset in two groups is still sloppy — each group names the METHOD that derived'
+      + '\n    the number, and a number cannot have been derived by two methods at once.'
+    : '';
+
+  // Before anything is measured, because a conflicting key makes every measurement below a coin
+  // flip: `known` would carry whichever of the two values the merge happened to keep.
+  if (conflicts.length) {
+    return fail(id, title,
+      `${conflicts.length} offset key(s) were reported by two derivation groups with different values:\n    - `
+      + `${conflicts.map((c) => c.text).join('\n    - ')}${COLLISION_PROSE}${dupNote}`,
+      { conflicts: conflicts.length, duplicates: duplicates.length });
+  }
+
   const shape = memberShape(cell.precision);
   const known = Object.entries(derived)
     .filter(([key, off]) => OFFSET_OWNER[key] && off !== null && off !== undefined)
@@ -638,7 +732,7 @@ function checkOffsetConsistency(cell, result) {
     return fail(id, title,
       `only ${known.length} recognised offset(s) were derived, so there is nothing to be consistent WITH. `
       + 'Mutual consistency is the only offset assertion available on a cell no shipped profile covers, '
-      + 'and it needs at least two numbers to make one.');
+      + `and it needs at least two numbers to make one.${dupNote}`);
   }
 
   const problems = [];
@@ -740,12 +834,12 @@ function checkOffsetConsistency(cell, result) {
   const bands = [...new Set(known.map((m) => m.owner))].sort((a, b) => bandRank(a) - bandRank(b));
   return problems.length
     ? fail(id, title,
-      `${problems.length} inconsistency/ies across ${known.length} derived offset(s):\n    - ${problems.slice(0, 8).join('\n    - ')}${disclaimer}`,
-      { derived: known.length, problems: problems.length })
+      `${problems.length} inconsistency/ies across ${known.length} derived offset(s):\n    - ${problems.slice(0, 8).join('\n    - ')}${dupNote}${disclaimer}`,
+      { derived: known.length, problems: problems.length, duplicates: duplicates.length })
     : pass(id, title,
       `${known.length} offset(s) across ${bands.length} class band(s) (${bands.join(' < ')}) + ${walkKnown.length} walk `
-      + `offset(s): ordering, ${cell.precision}-precision alignment and non-overlap all hold.${disclaimer}`,
-      { derived: known.length });
+      + `offset(s): ordering, ${cell.precision}-precision alignment and non-overlap all hold.${dupNote}${disclaimer}`,
+      { derived: known.length, duplicates: duplicates.length });
 }
 
 function semanticPreamble(id, title, result, offsetKey) {
@@ -1288,7 +1382,19 @@ function checkProfileAgreement(cell, profile, result) {
     return skip(id, title, `no shipped profile covers ${cell.name} — nothing to cross-check against, and nothing to fall back to`);
   }
 
-  const derived = { ...result.structural.offsets, ...result.semantic.offsets, ...result.strings.offsets };
+  // Same merge, same hole. This one is worse in kind than the consistency check's: the value the
+  // spread happened to keep is what got compared against the shipped profile, so a driver reporting
+  // two answers for one key had a 50/50 chance of a green "matches" — and the run would then be
+  // quoted as corroboration of an offset the driver contradicted itself about.
+  const { merged: derived, conflicts: mergeConflicts } = mergeDerivationGroups(result);
+  if (mergeConflicts.length) {
+    return fail(id, title,
+      `${mergeConflicts.length} offset key(s) were reported by two derivation groups with different values, so `
+      + `there is no single derived number to compare against ${profile.id}:\n    - `
+      + `${mergeConflicts.map((c) => c.text).join('\n    - ')}${COLLISION_PROSE}`,
+      { profileId: profile.id, conflicts: mergeConflicts.length });
+  }
+
   const compared = [];
   const mismatched = [];
   const missing = [];

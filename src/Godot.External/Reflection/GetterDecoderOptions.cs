@@ -7,9 +7,15 @@ namespace Godot.External.Reflection;
 /// </summary>
 /// <remarks>
 /// The defaults are the values that produced the validated result on the shipped 4.5-stable Windows
-/// x86-64 templates: 3/3 on <c>CanvasItem::is_visible</c> (<c>+0x370</c>), the release
-/// <c>get_text</c> at RVA <c>0x1483bb0</c> (<c>+0x800</c>) and the release <c>RichTextLabel</c>-shaped
-/// <c>get_text</c> at RVA <c>0x1663590</c> (<c>+0xa78</c>).
+/// x86-64 templates: 3/3 on <c>CanvasItem::is_visible</c> (<c>+0x370</c>), <c>Label::get_text</c>
+/// (<c>+0x7f8</c>) and <c>RichTextLabel::get_text</c> (<c>+0xa78</c>), all three now resolved
+/// <b>by name</b> through a live <c>ClassDB</c> walk rather than by matching an offset.
+/// <para>
+/// The <c>Label::get_text</c> row previously recorded here as RVA <c>0x1483bb0</c> decoding
+/// <c>+0x800</c> was wrong and is deleted: <c>0x1483bb0</c> is a different <c>String</c> getter that
+/// merely sat at an offset already believed. Godot 4.5's real <c>Label::get_text</c> is at RVA
+/// <c>0x15d11b0</c> and decodes <c>+0x7f8</c> (docs/analysis.md §13.2, §16).
+/// </para>
 /// </remarks>
 public sealed class GetterDecoderOptions
 {

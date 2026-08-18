@@ -266,6 +266,34 @@ const SCENARIOS = [
     detailMatch: { 'semantic.offset': /denominator chosen after the answer was known/ },
   },
   {
+    // The merge hole. `{ ...structural, ...semantic, ...strings }` keeps the LAST group that
+    // mentions a key, so a driver publishing two different answers for node.name had one of them
+    // discarded silently and every check downstream scored the survivor. An audit hit exactly this
+    // and the run stayed green — correctly, because the surviving value happened to be right.
+    // Nothing would have said so had it been the other one.
+    //
+    // Both merge sites are asserted, because reverting either one alone leaves the other catching
+    // the fault and proves nothing about the one that was reverted.
+    name: 'one offset key reported by two derivation groups with different values',
+    faults: ['offset-group-collision'],
+    mustFail: ['offsets.internal_consistency', 'profile.agreement'],
+    detailMatch: {
+      'offsets.internal_consistency': [
+        // The conflict itself, named, with BOTH values — not a downstream alignment or band-ordering
+        // complaint about whichever number the merge kept, which is a different finding entirely.
+        /node\.name is claimed by 2 derivation groups with different values \(derivation\.structural\.offsets=0x1c8, derivation\.strings\.offsets=0x1c0\)/,
+        // Same key twice with the SAME value is benign — the merge is unambiguous either way — but
+        // it must be disclosed, not absorbed. Without this the "identical values" branch would be a
+        // line of code nothing has ever executed.
+        /label\.text = 0x7f8 in derivation\.structural\.offsets and derivation\.strings\.offsets/,
+      ],
+      'profile.agreement': /no single derived number to compare against/,
+    },
+    // The readings are all still correct, like flat-offsets: this fault is about what the driver
+    // says it derived, not about what it read.
+    mustPass: ['strings.names', 'strings.text.ascii', 'semantic.size'],
+  },
+  {
     name: 'a wrong parent pointer is reported as a wrong parent, not as a missing node',
     faults: ['bad-parent'],
     mustFail: ['structural.parent'],
@@ -494,11 +522,16 @@ for (const scenario of ALL_SCENARIOS) {
     // "The check went red" and "the assertion I fixed went red" are different claims, and only the
     // second one is evidence that a fix is armed. A check with several clauses can redden for the
     // wrong reason and look like proof.
-    for (const [id, pattern] of Object.entries(scenario.detailMatch ?? {})) {
+    // A value may be one regex or several: one check's detail line can carry two independent claims
+    // (the collision scenario asserts both the conflicting key and the benign duplicate note), and
+    // folding those into a single pattern would mean neither is separately armed.
+    for (const [id, patterns] of Object.entries(scenario.detailMatch ?? {})) {
       const check = checks.find((c) => c.id === id);
       if (!check) { problems.push(`${id} was not produced at all`); continue; }
-      if (!pattern.test(check.detail ?? '')) {
-        problems.push(`${id} did not fail for the expected reason — no match for ${pattern} in:\n         ${(check.detail ?? '').split('\n').slice(0, 3).join('\n         ')}`);
+      for (const pattern of [patterns].flat()) {
+        if (!pattern.test(check.detail ?? '')) {
+          problems.push(`${id} did not fail for the expected reason — no match for ${pattern} in:\n         ${(check.detail ?? '').split('\n').slice(0, 3).join('\n         ')}`);
+        }
       }
     }
   }

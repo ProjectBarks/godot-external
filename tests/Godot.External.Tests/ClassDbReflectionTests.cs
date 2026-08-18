@@ -23,7 +23,9 @@ public sealed class ClassDbReflectionTests
 
     [Theory]
     [InlineData(4, 3)]
+    [InlineData(4, 4)]
     [InlineData(4, 5)]
+    [InlineData(4, 6)]
     public void SupportedWindowsBuildsResolveALayout(int major, int minor)
     {
         Assert.True(GodotReflectionSupport.TryResolve(major, minor, isWindows: true, out _, out string reason));
@@ -31,10 +33,27 @@ public sealed class ClassDbReflectionTests
     }
 
     [Fact]
-    public void FourSixIsRefusedBecauseThePropertyMapBecomesAnAHashMap()
+    public void FourSevenIsRefusedBecauseClassInfoNoLongerCarriesTheClassName()
     {
-        Assert.False(GodotReflectionSupport.TryResolve(4, 6, isWindows: true, out _, out string reason));
-        Assert.Contains("AHashMap", reason, StringComparison.Ordinal);
+        // 4.6 used to be refused here, on the premise that AHashMap ended the walk. It did not: the
+        // map this route reads (method_map) is still a HashMap at 4.6, and AHashMapWalk covers the
+        // three that converted. The real boundary is one version further on, where ClassInfo drops
+        // `StringName name` and `StringName inherits` into GDType — at which point the walker is not
+        // slower or riskier, it is reading two members that no longer exist.
+        Assert.False(GodotReflectionSupport.TryResolve(4, 7, isWindows: true, out _, out string reason));
+        Assert.Contains("GDType", reason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FourFourTakesTheFourThreeLayoutAndNotTheFourFiveOne()
+    {
+        // docs/analysis.md §15.7 caught this gate sending 4.4 to Godot45, which is wrong in BOTH
+        // members: 4.4 has the 48-byte HashMap and still carries cname. It cost nothing only because
+        // no caller reaches this code yet, and "costs nothing yet" is not "is not a defect".
+        Assert.True(GodotReflectionSupport.TryResolve(4, 4, isWindows: true, out ClassDbLayout layout, out _));
+        Assert.Equal(48, layout.HashMapSize);
+        Assert.Equal(0x18, layout.HashMapHeadElement);
+        Assert.True(layout.StringNameHasCompileTimeName);
     }
 
     [Fact]
@@ -60,32 +79,109 @@ public sealed class ClassDbReflectionTests
         Assert.False(current.StringNameHasCompileTimeName);
     }
 
-    // ---- MethodBind probe ------------------------------------------------------------------
+    [Fact]
+    public void TheHashMapSizeAndTheHeadElementOffsetAreNotTheSameNumber()
+    {
+        // These two were conflated once already, which is how a source-derived 48 and a
+        // "measured" 40 stood off against each other (docs/analysis.md §15.3 vs §16.5). Live
+        // measurement on 4.3 and 4.5 templates: head_element at +0x18 / +0x10, and the map strides
+        // that follow from it are 0x30 / 0x28. Asserting only one of the pair lets the other drift.
+        Assert.Equal(0x18, ClassDbLayout.Godot43.HashMapHeadElement);
+        Assert.Equal(0x10, ClassDbLayout.Godot45.HashMapHeadElement);
+
+        // The trailing members (tail_element, capacity_index, num_elements) occupy a
+        // version-invariant 0x18 after head_element -- which is exactly why a head-relative
+        // measurement looks version-independent and says nothing about the size.
+        Assert.Equal(ClassDbLayout.Godot43.HashMapSize, ClassDbLayout.Godot43.HashMapHeadElement + 0x18);
+        Assert.Equal(ClassDbLayout.Godot45.HashMapSize, ClassDbLayout.Godot45.HashMapHeadElement + 0x18);
+    }
 
     [Fact]
-    public void TheProbeFindsTheMethodPointerWithoutKnowingSizeofMethodBind()
+    public void FourSixKeepsTheFourFiveHashMapAndChangesEverythingElseAroundIt()
     {
-        // Release and debug MethodBind differ in size because arg_names is DEBUG_ENABLED-only, so
-        // the slot index is exactly what must NOT be hardcoded.
-        foreach (int slot in new[] { 4, 5 })
+        // "4.6 carries over from 4.5" was the prior (§15.6). Measured on a running 4.6.3 template it
+        // is true of the HashMap and of nothing else, and both halves are asserted here so that
+        // aliasing Godot46 onto Godot45 — the cheap thing to do — turns this red.
+        Assert.Equal(ClassDbLayout.Godot45.HashMapSize, ClassDbLayout.Godot46.HashMapSize);
+        Assert.Equal(ClassDbLayout.Godot45.HashMapHeadElement, ClassDbLayout.Godot46.HashMapHeadElement);
+
+        // ClassInfo gains `const GDType *gdtype`, so every map inside it moves 8 bytes.
+        Assert.Equal(0x20, ClassDbLayout.Godot45.ClassInfoMethodMap);
+        Assert.Equal(0x28, ClassDbLayout.Godot46.ClassInfoMethodMap);
+
+        // CowData gains a capacity field and a 16-byte-aligned payload, so the element count moves.
+        Assert.Equal(8, ClassDbLayout.Godot45.CowDataSizeBackOffset);
+        Assert.Equal(0x10, ClassDbLayout.Godot46.CowDataSizeBackOffset);
+
+        Assert.False(ClassDbLayout.Godot45.HasAHashMaps);
+        Assert.True(ClassDbLayout.Godot46.HasAHashMaps);
+    }
+
+    [Fact]
+    public void TheMethodMapHeadOffsetsCancelBetweenFourThreeAndFourSix()
+    {
+        // The trap this pair exists to name: the measurable quantity is the head_element FIELD's
+        // offset inside ClassInfo, and on 4.3 and 4.6 it is the same number — 0x38 — for two
+        // completely different reasons. 4.3 has method_map at 0x20 with head_element 0x18 into the
+        // map; 4.6 has method_map at 0x28 with head_element 0x10. Reading 0x38 on both and concluding
+        // "unchanged" is §16.5's mistake with the operands swapped.
+        Assert.Equal(
+            ClassDbLayout.Godot43.ClassInfoMethodMap + ClassDbLayout.Godot43.HashMapHeadElement,
+            ClassDbLayout.Godot46.ClassInfoMethodMap + ClassDbLayout.Godot46.HashMapHeadElement);
+        Assert.NotEqual(ClassDbLayout.Godot43.ClassInfoMethodMap, ClassDbLayout.Godot46.ClassInfoMethodMap);
+        Assert.NotEqual(ClassDbLayout.Godot43.HashMapHeadElement, ClassDbLayout.Godot46.HashMapHeadElement);
+    }
+
+    // ---- MethodBind probe ------------------------------------------------------------------
+
+    /// <summary>
+    /// The two slots <c>MethodBind</c>'s method pointer actually occupies, measured live on stock
+    /// export templates: <c>sizeof(MethodBind)</c> is <c>0x48</c> on release and <c>0x58</c> on
+    /// debug (<c>arg_names</c> is <c>DEBUG_ENABLED</c>-only), identically on 4.3 and 4.5.
+    /// </summary>
+    public static TheoryData<int, int> MeasuredMethodSlots => new()
+    {
+        { 9, 0x48 },    // 4.3-release and 4.5-release
+        { 11, 0x58 },   // 4.3-debug and 4.5-debug
+    };
+
+    [Theory]
+    [MemberData(nameof(MeasuredMethodSlots))]
+    public void TheProbeFindsTheMethodPointerWithoutKnowingSizeofMethodBind(int slot, int sizeofMethodBind)
+    {
+        // This test used to place the pointer at slot 4 or 5 -- inside the old 8-slot window and
+        // nowhere near the real layout -- so it passed while the shipped default refused 100% of
+        // live probes. It is the §13.11 family: a check with no way to come out other than the way
+        // it came out. The slots below are the measured ones, so reverting DefaultProbeSlots to 8
+        // now turns this red.
+        Assert.Equal(sizeofMethodBind, slot * 8);
+
+        FakeByteSource memory = new();
+        const ulong Bind = 0x200000;
+
+        for (int i = 0; i < MethodBindProbe.DefaultProbeSlots + 4; i++)
         {
-            FakeByteSource memory = new();
-            const ulong Bind = 0x200000;
-
-            for (int i = 0; i < 8; i++)
-            {
-                // vtable into .rdata, then StringName handles and heap pointers: nothing executable.
-                memory.WritePointer(Bind + (ulong)(i * 8), 0x150000000 + (ulong)i);
-            }
-
-            memory.WritePointer(Bind + (ulong)(slot * 8), 0x14139F520);
-
-            Assert.True(MethodBindProbe.TryFindMethodPointer(
-                memory, Bind, Text, out ulong code, out int found, out string reason));
-            Assert.Equal(0x14139F520UL, code);
-            Assert.Equal(slot, found);
-            Assert.Empty(reason);
+            // vtable into .rdata, then StringName handles and heap pointers: nothing executable.
+            memory.WritePointer(Bind + (ulong)(i * 8), 0x150000000 + (ulong)i);
         }
+
+        memory.WritePointer(Bind + (ulong)(slot * 8), 0x14139F520);
+
+        // No explicit probeSlots: the point is that the SHIPPED DEFAULT reaches the real slot.
+        Assert.True(MethodBindProbe.TryFindMethodPointer(
+            memory, Bind, Text, out ulong code, out int found, out string reason));
+        Assert.Equal(0x14139F520UL, code);
+        Assert.Equal(slot, found);
+        Assert.Empty(reason);
+    }
+
+    [Fact]
+    public void TheDefaultWindowReachesTheDebugMethodBindAndNoFurtherThanItNeedsTo()
+    {
+        // Reaching slot 11 is the requirement; the ceiling is the other half of the bargain,
+        // because every extra slot is another chance at a second .text hit, which refuses.
+        Assert.True(MethodBindProbe.DefaultProbeSlots >= 12, "the debug method pointer is at slot 11");
+        Assert.True(MethodBindProbe.DefaultProbeSlots <= 16, "a wide window invites a spurious second hit");
     }
 
     [Fact]
@@ -94,13 +190,15 @@ public sealed class ClassDbReflectionTests
         FakeByteSource memory = new();
         const ulong Bind = 0x200000;
 
-        for (int i = 0; i < 8; i++)
+        for (int i = 0; i < MethodBindProbe.DefaultProbeSlots; i++)
         {
             memory.WritePointer(Bind + (ulong)(i * 8), 0x150000000 + (ulong)i);
         }
 
-        memory.WritePointer(Bind + (4 * 8), 0x14139F520);
-        memory.WritePointer(Bind + (6 * 8), 0x141483BB0);
+        // The two slots the release and debug layouts respectively use: a build whose MethodBind
+        // somehow held both would be exactly the coin flip this refusal exists for.
+        memory.WritePointer(Bind + (9 * 8), 0x14139F520);
+        memory.WritePointer(Bind + (11 * 8), 0x141483BB0);
 
         // Picking either one would be a coin flip whose loser is a decoded offset for the wrong
         // property — indistinguishable from a right answer downstream.
@@ -116,7 +214,7 @@ public sealed class ClassDbReflectionTests
         FakeByteSource memory = new();
         const ulong Bind = 0x200000;
 
-        for (int i = 0; i < 8; i++)
+        for (int i = 0; i < MethodBindProbe.DefaultProbeSlots; i++)
         {
             memory.WritePointer(Bind + (ulong)(i * 8), 0x150000000 + (ulong)i);
         }

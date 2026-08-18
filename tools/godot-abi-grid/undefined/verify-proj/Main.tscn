@@ -1,0 +1,169 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://Probe.gd" id="1_probe"]
+[ext_resource type="Script" path="res://Marker.gd" id="2_marker"]
+
+
+[node name="RootHarness" type="Control"]
+offset_right = 1920.0
+offset_bottom = 1080.0
+script = ExtResource("1_probe")
+
+[node name="AlphaPanel" type="Control" parent="."]
+offset_left = 37.0
+offset_top = 53.0
+offset_right = 650.0
+offset_bottom = 280.0
+scale = Vector2(1.25, 0.75)
+
+[node name="AlphaLeaf" type="ColorRect" parent="AlphaPanel"]
+offset_left = 11.0
+offset_top = 13.0
+offset_right = 420.0
+offset_bottom = 164.0
+color = Color(0.203922, 0.407843, 0.803922, 1)
+
+[node name="BetaBranch" type="Control" parent="AlphaPanel"]
+offset_left = 23.0
+offset_top = 29.0
+offset_right = 910.0
+offset_bottom = 342.0
+scale = Vector2(0.5, 2)
+
+[node name="GammaNest" type="Control" parent="AlphaPanel/BetaBranch"]
+offset_left = 7.0
+offset_top = 11.0
+offset_right = 416.0
+offset_bottom = 162.0
+
+[node name="DeltaCore" type="Control" parent="AlphaPanel/BetaBranch/GammaNest"]
+offset_left = 5.0
+offset_top = 3.0
+offset_right = 288.0
+offset_bottom = 100.0
+
+[node name="EpsilonCore" type="Control" parent="AlphaPanel/BetaBranch/GammaNest/DeltaCore"]
+offset_left = 2.0
+offset_top = 1.0
+offset_right = 153.0
+offset_bottom = 68.0
+
+[node name="ZetaLabelAscii" type="Label" parent="AlphaPanel/BetaBranch/GammaNest/DeltaCore/EpsilonCore"]
+offset_right = 331.0
+offset_bottom = 89.0
+text = "GridProbe ASCII 0123"
+clip_text = true
+
+[node name="ZetaLabelUnicode" type="Label" parent="AlphaPanel/BetaBranch/GammaNest/DeltaCore/EpsilonCore"]
+offset_top = 95.0
+offset_right = 347.0
+offset_bottom = 178.0
+text = "héllo ✦ 日本語"
+clip_text = true
+
+[node name="ZetaRich" type="RichTextLabel" parent="AlphaPanel/BetaBranch/GammaNest/DeltaCore/EpsilonCore"]
+offset_top = 185.0
+offset_right = 401.0
+offset_bottom = 281.0
+bbcode_enabled = false
+text = "ρich ✦ テキスト 𝄞 RTL"
+
+[node name="EpsilonSibling" type="Panel" parent="AlphaPanel/BetaBranch/GammaNest/DeltaCore"]
+offset_left = 160.0
+offset_top = 1.0
+offset_right = 245.0
+offset_bottom = 60.0
+
+[node name="DeltaSiblingOne" type="Node" parent="AlphaPanel/BetaBranch/GammaNest"]
+
+[node name="DeltaSiblingTwo" type="Control" parent="AlphaPanel/BetaBranch/GammaNest"]
+offset_left = 300.0
+offset_top = 50.0
+offset_right = 367.0
+offset_bottom = 113.0
+
+[node name="VisibleTwin" type="Panel" parent="AlphaPanel/BetaBranch"]
+offset_left = 30.0
+offset_top = 350.0
+offset_right = 301.0
+offset_bottom = 489.0
+visible = true
+
+[node name="HiddenTwin" type="Panel" parent="AlphaPanel/BetaBranch"]
+visible = false
+offset_left = 320.0
+offset_top = 350.0
+offset_right = 679.0
+offset_bottom = 531.0
+
+[node name="AnchoredWide" type="Control" parent="AlphaPanel/BetaBranch"]
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -431.0
+offset_top = -197.0
+offset_right = 182.0
+offset_bottom = -46.0
+
+[node name="AnchoredChild" type="ColorRect" parent="AlphaPanel/BetaBranch/AnchoredWide"]
+offset_left = 3.0
+offset_top = 7.0
+offset_right = 56.0
+offset_bottom = 48.0
+color = Color(0.803922, 0.203922, 0.407843, 1)
+
+[node name="AlphaSibling" type="Control" parent="AlphaPanel"]
+offset_left = 450.0
+offset_top = 5.0
+offset_right = 529.0
+offset_bottom = 72.0
+
+[node name="OmegaPanel" type="Control" parent="."]
+offset_left = 1000.0
+offset_top = 600.0
+offset_right = 1289.0
+offset_bottom = 761.0
+scale = Vector2(2.5, 1.75)
+
+[node name="OmegaChild" type="ColorRect" parent="OmegaPanel"]
+offset_left = 9.0
+offset_top = 9.0
+offset_right = 110.0
+offset_bottom = 72.0
+color = Color(0.407843, 0.803922, 0.203922, 1)
+
+[node name="OmegaRich" type="RichTextLabel" parent="OmegaPanel"]
+offset_left = 13.0
+offset_top = 79.0
+offset_right = 282.0
+offset_bottom = 192.0
+bbcode_enabled = true
+text = "[b]Ωmega[/b] ✧ Кириллица 𝔅 BBCode"
+
+[node name="OmegaMarker" type="Node" parent="OmegaPanel"]
+script = ExtResource("2_marker")
+
+[node name="OmegaHidden" type="Panel" parent="OmegaPanel"]
+visible = false
+offset_left = 17.0
+offset_top = 200.0
+offset_right = 250.0
+offset_bottom = 307.0
+
+[node name="OmegaShadow" type="ColorRect" parent="OmegaPanel/OmegaHidden"]
+offset_left = 5.0
+offset_top = 9.0
+offset_right = 154.0
+offset_bottom = 62.0
+color = Color(0.203922, 0.203922, 0.203922, 1)
+
+[node name="OmegaAnchored" type="Control" parent="OmegaPanel"]
+anchor_left = 0.125
+anchor_top = 0.375
+anchor_right = 0.625
+anchor_bottom = 0.875
+offset_left = -19.875
+offset_top = 3.125
+offset_right = -19.375
+offset_bottom = -16.375

@@ -24,7 +24,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { discoverCells, fullGrid, isReferenceCell, loadAvailability } from './lib/grid.mjs';
 import { loadExpected } from './lib/expected.mjs';
 import { loadProfiles, selectProfile } from './lib/profiles.mjs';
-import { runChecks } from './lib/checks.mjs';
+import { runChecks, mergeDerivationGroups } from './lib/checks.mjs';
 import { crossCellChecks } from './lib/crosscell.mjs';
 import { launchTarget, killTarget, readyFilePathFor } from './lib/target.mjs';
 import { resolveDriver, runDriver, buildRequest } from './lib/driver.mjs';
@@ -180,10 +180,20 @@ async function runCell({ cell, expected, profiles, driver, opts }) {
     // Carried on the record, not just in rawResult, because summary.json strips rawResult and the
     // cross-cell checks (lib/crosscell.mjs) read the summary. An offset that only one cell can see
     // is an offset nothing can contradict.
+    //
+    // The flattening is mergeDerivationGroups' rather than a spread, for the same reason
+    // lib/checks.mjs uses it: a key claimed by two groups with two values resolved to whichever one
+    // the spread happened to keep, and this record is what the CROSS-CELL checks compare. Feeding
+    // grid.binding_invariance an arbitrary winner would have it agree or disagree about a number no
+    // driver actually stands behind. offsets.internal_consistency has already reddened the cell by
+    // this point; the conflicting keys are withheld from the comparison and named instead.
+    const flat = mergeDerivationGroups(normalised);
+    const conflictingKeys = new Set(flat.conflicts.map((c) => c.key));
     record.derived = {
-      offsets: { ...normalised.structural.offsets, ...normalised.semantic.offsets, ...normalised.strings.offsets },
+      offsets: Object.fromEntries(Object.entries(flat.merged).filter(([k]) => !conflictingKeys.has(k))),
       walk: normalised.walk,
       scriptInstanceClass: normalised.scriptInstanceClass,
+      ...(flat.conflicts.length ? { offsetConflicts: flat.conflicts.map((c) => c.text) } : {}),
     };
     record.status = counts.fail > 0 ? 'fail' : 'pass';
     record.engineVersion = ready?.engineVersion ?? raw?.engineVersion ?? null;

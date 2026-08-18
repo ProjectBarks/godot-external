@@ -232,6 +232,94 @@ public sealed class AbsentNeverWrongTests
     }
 
     [Fact]
+    public void AnEvenSplitDeclaresTheTieRatherThanGoingSilent()
+    {
+        // secondRichTextLabel is load-bearing, not decoration. With the authored scene's single
+        // RichTextLabel, OfClass refuses the key before the candidates are ever weighed ("exactly ONE
+        // node of class RichTextLabel"), so the even-split branch never runs and a test pointed at
+        // this fixture alone would be green without exercising it — which is what
+        // AnEvenSplitOnOneNodeAlsoWithholds, asserting only that the offset is absent, has been doing.
+        GridSceneMemory memory = new(richTextTie: true, secondRichTextLabel: true);
+        DriverResult result = Calibrate(memory);
+
+        // Withholding correctly and saying nothing about it are two different acts, and only the
+        // first one had been implemented here. This path wrote a note and returned, so
+        // `derivation.notDerived` stayed empty, and profile.agreement — which cannot read notes and
+        // must not guess — scored the absence as an unexplained gap. Measured on 4.5-debug-gdscript:
+        // richTextLabel.text tied 0xa80 (correct) against 0x1008 (memory noise that decoded), and the
+        // cell failed for having withheld rather than for anything it got wrong.
+        Assert.True(result.Derivation.NotDerived.ContainsKey(OffsetKeys.RichTextLabelText),
+            "the even split withheld richTextLabel.text without declaring it");
+
+        // And the reason has to be the REAL one. Declaring a plausible-sounding cause would leave the
+        // tie unreported, which is the failure this whole change exists to surface — so the candidate
+        // offsets that tied, and the node they tied on, must appear in it.
+        string reason = result.Derivation.NotDerived[OffsetKeys.RichTextLabelText];
+        Assert.Contains("split evenly", reason, StringComparison.Ordinal);
+        Assert.Contains(Wire.Offset(GridSceneMemory.RichTextLabelText), reason, StringComparison.Ordinal);
+        Assert.Matches(@"0x[0-9a-f]+=""", reason);
+    }
+
+    [Fact]
+    public void AWithheldOffsetDeclaresTheObstacleThatStoppedIt()
+    {
+        GridSceneMemory memory = new(unreadableParentWindow: true);
+        DriverResult result = Calibrate(memory);
+
+        // The generic withhold — every key that goes through Publish and whose candidate set does not
+        // resolve. canvasItem.visible took this path on 4.5-release-dotnet ("2 candidates survived
+        // (0x370, 0x400)") and node.parent takes it here; the branch is the same one, and it declared
+        // nothing for either.
+        Assert.False(result.Derivation.Structural.Offsets.ContainsKey(OffsetKeys.NodeParent));
+        Assert.True(result.Derivation.NotDerived.ContainsKey(OffsetKeys.NodeParent),
+            "node.parent was withheld without declaring it");
+
+        // The obstacle the candidate set actually presents, not a summary of it.
+        string reason = result.Derivation.NotDerived[OffsetKeys.NodeParent];
+        Assert.True(reason.Trim().Length >= 8, $"reason \"{reason}\" explains nothing");
+        Assert.Contains("sample", reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ASingletonClassRefusalIsDeclaredAndIsNotOverwrittenByAVaguerOne()
+    {
+        GridSceneMemory memory = new(suppressRichText: true);
+        DriverResult result = Calibrate(memory);
+
+        Assert.False(result.Derivation.Strings.Offsets.ContainsKey(OffsetKeys.RichTextLabelText));
+        Assert.True(result.Derivation.NotDerived.ContainsKey(OffsetKeys.RichTextLabelText),
+            "richTextLabel.text was withheld without declaring it");
+
+        // Two refusals fire for this one key: OfClass rejects it because the class has a single
+        // member, and the empty-pool branch a few lines later rejects the now-empty pool as "nothing
+        // matched the layout". Both statements are true; only the first is the reason the key was
+        // withheld. Declaring the second would be declaring a cause that is not the operative one —
+        // the precise way T3 can be got wrong — so the first refusal is the one that stands.
+        string reason = result.Derivation.NotDerived[OffsetKeys.RichTextLabelText];
+        Assert.Contains("exactly ONE node of class", reason, StringComparison.Ordinal);
+        Assert.DoesNotContain("RichTextLabel layout", reason, StringComparison.Ordinal);
+
+        // ...and the broader observation is not lost, it just is not the declaration.
+        Assert.Contains(result.Notes, n => n.Contains("RichTextLabel layout", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ATextClassWithNoSurvivingCandidateDeclaresItself()
+    {
+        GridSceneMemory memory = new(unsharedXlText: true);
+        DriverResult result = Calibrate(memory);
+
+        // label.text has two instances, so the singleton rule never fires here — the bracket simply
+        // rejected every candidate. A refusal reached by applying a rule and finding nothing is still
+        // a refusal, and is indistinguishable from never having looked unless it says so.
+        Assert.False(result.Derivation.Strings.Offsets.ContainsKey(OffsetKeys.LabelText));
+        Assert.True(result.Derivation.NotDerived.ContainsKey(OffsetKeys.LabelText),
+            "label.text was withheld without declaring it");
+        Assert.Contains("Label layout", result.Derivation.NotDerived[OffsetKeys.LabelText],
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void NotOneTextLessNodeIsGivenAString()
     {
         // The assertion the harness itself was missing: it only ever inspected the three nodes that

@@ -173,6 +173,29 @@ const MUTATIONS = [
     expect: ['walkCount reported as the string'],
   },
   {
+    id: 'offset-group-collision',
+    what: '#13 a key reported in two derivation groups with different values is not silently merged',
+    file: 'lib/checks.mjs',
+    // The old behaviour is the spread merge in BOTH places — last group wins, nothing complains.
+    // Reverting one site alone leaves the other reddening the scenario, which would prove nothing
+    // about the site that was reverted; see hollow-reverse for the same trap. Restoring the literal
+    // spread is also the point: replacing the call with a helper that still reports conflicts would
+    // be testing the diff rather than the behaviour.
+    edits: [
+      {
+        from: '  const { merged: derived, conflicts, duplicates } = mergeDerivationGroups(result);',
+        to: '  const derived = { ...result.structural.offsets, ...result.semantic.offsets, ...result.strings.offsets };\n'
+          + '  const conflicts = [];\n  const duplicates = [];',
+      },
+      {
+        from: '  const { merged: derived, conflicts: mergeConflicts } = mergeDerivationGroups(result);',
+        to: '  const derived = { ...result.structural.offsets, ...result.semantic.offsets, ...result.strings.offsets };\n'
+          + '  const mergeConflicts = [];',
+      },
+    ],
+    expect: ['one offset key reported by two derivation groups with different values'],
+  },
+  {
     id: 'visibility-anchors',
     what: 'Species 1 — visibility anchors that intersect rather than spelling out the answer',
     file: 'lib/driver.mjs',
