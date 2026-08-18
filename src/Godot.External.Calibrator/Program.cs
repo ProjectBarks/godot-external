@@ -1,6 +1,7 @@
 using System.Globalization;
 using Godot.External.Calibrator.Calibration;
 using Godot.External.Calibrator.Protocol;
+using Godot.External.Calibrator.Reflection;
 using Godot.External.Calibrator.Target;
 using LiveClr.Memory;
 
@@ -98,10 +99,10 @@ public static class Program
         Action refresh)
     {
         ulong? root = ExplicitRoot(notes);
+        RegionScanner scanner = new(reader, new ProcessRegionSource(process));
 
         if (root is null)
         {
-            RegionScanner scanner = new(reader, new ProcessRegionSource(process));
             RootLocation? located = new RootLocator(reader, scanner).Locate(
                 request.WalkRootName ?? string.Empty,
                 request.KnownRootChildNames(),
@@ -135,8 +136,50 @@ public static class Program
             };
         }
 
-        DriverResult result = new CalibrationSession(reader, request, managed, refresh).Run(root.Value);
+        ClassDbCorroborator? corroborator = BuildCorroborator(reader, process, scanner, request, notes);
+        DriverResult result = new CalibrationSession(reader, request, managed, refresh, corroborator).Run(root.Value);
         return result with { Notes = [.. notes, .. result.Notes] };
+    }
+
+    /// <summary>
+    /// Builds the independent getter-disassembly route, or explains why there is none.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// It is assembled <em>here</em> rather than inside the session because the two things it needs —
+    /// a whole-process scanner and the engine executable's base address — are process facts the
+    /// session is deliberately not given. The session receives a finished collaborator and a set of
+    /// derived offsets, which is what keeps the second route from being able to see anything the first
+    /// one did beyond its published answers.
+    /// </para>
+    /// <para>
+    /// The first module in load order is the main image. Reading its base from the loader rather than
+    /// scanning for an MZ header matters: several mapped images start with one.
+    /// </para>
+    /// <para>
+    /// It reads through the same <c>PageCache</c> the rest of the run uses. The route makes on the
+    /// order of a hundred thousand small reads chasing chains, and <c>ClassDB</c> registration is
+    /// finished long before a scene exists — so a cached page is not a stale reading here, it is the
+    /// same immutable table read twice.
+    /// </para>
+    /// </remarks>
+    private static ClassDbCorroborator? BuildCorroborator(
+        IMemoryReader reader,
+        WindowsProcessMemory process,
+        RegionScanner scanner,
+        DriverRequest request,
+        ICollection<string> notes)
+    {
+        ModuleInfo? main = process.Modules.Modules.Count > 0 ? process.Modules.Modules[0] : null;
+
+        if (main is null || main.BaseAddress == 0)
+        {
+            notes.Add("no main module could be enumerated, so the getter-disassembly cross-check cannot tell a "
+                    + "code address from a heap pointer and is not run.");
+            return null;
+        }
+
+        return new ClassDbCorroborator(reader, scanner, main.BaseAddress, request.EngineVersion);
     }
 
     private static ulong? ExplicitRoot(ICollection<string> notes)

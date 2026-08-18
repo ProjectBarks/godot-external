@@ -32,8 +32,8 @@ Tracks both `godot-external` and `LiveClr`. Updated as tasks land.
 | **T8** | **LiveClr `IsString` dead on live targets** *(new, found by T2)* | **DONE** |
 | T9 | LiveClr `IsList` — same defect, proved not fixed *(new, found by T8)* | OPEN |
 | **T5a** | **Reflection defects + `HashMap` contradiction** | **DONE** |
-| T5b | Wire ClassDB cross-check | WAITING on T2/T3 (shares the calibrator) |
-| T6 | Godot 4.6 support | IN PROGRESS |
+| **T5b** | **Wire ClassDB cross-check** | **DONE** |
+| **T6** | **Godot 4.6 support** | **DONE** |
 | **T7** | **Derivation-group merge collision** | **DONE** |
 
 ### T1 — DONE, verified independently
@@ -169,6 +169,59 @@ with a falsifiable test**.
 
 `AsObject`, `AsArray` and `IsArray` were checked on the same run and are **not** affected — arrays do
 report `SZARRAY` live, 555 objects typed cleanly, and `System.String[]` elements decode.
+
+### T5b — DONE, verified independently. T1–T7 are now complete.
+
+Verifier run by the orchestrator: disabling the name gate in `OffsetCrossCheck` fails **exactly the
+four tests written for it** and nothing else; restored, **392/392**. `npm test` **60/60 scenarios,
+27/27 armed**.
+
+| | before | after |
+| --- | --- | --- |
+| selftest scenarios | 56 | **60** |
+| armed fixes | 23 | **27** |
+| C# tests | 366 | **392** |
+| independent corroboration | none wired | **live, every cell, every run** |
+
+Agreement per cell — **zero disagreements anywhere**, across all 16 cells:
+
+| cell | agreed | |
+| --- | --- | --- |
+| 4.3-release | **5/8** | 4.3-debug 1/8 |
+| 4.4.1-release | **7/8** | 4.4.1-debug 3/8 |
+| 4.5-release | **7/8** | 4.5-debug 3/8 |
+| 4.6.3-release | **7/8** | 4.6.3-debug 3/8 |
+
+§13.2's *corrected* RVAs come back byte-for-byte on 4.5-release. 4.4.1 and 4.6.3 are new, and the
+4.6 pair confirms §17's `+0x7d8` / `+0x348` at the default window.
+
+**No offsets were written to `profiles.json` or `GodotAbiProfiles.cs`.** The corroboration lives in
+the comparison. All four 4.3 cells still **SKIP** `profile.agreement`.
+
+`OffsetAgreement` gains **`NotCompared`**, returned *before looking at either value* when there is no
+name — so silence cannot be read as corroboration. Proved live in both directions: a deliberately
+perturbed offset produced `disagree` with **no `offset` key at all** while `derivation` still
+published the true `0x370` (which is also the one-way-input proof), and probing a misspelled getter
+plus an *inherited* `Control::get_text` both produced `notCompared`.
+
+**Three findings.**
+
+*The 869-vs-870 class count was never a transcription slip — it is `--headless`.* Same binary, same
+cell, same code: 4.5-release-gdscript walks **908 windowed and 907 headless**, reproducibly. §16.1's
+guess was wrong about the cause.
+
+*The version parse was a real trap.* Targets report `4.5-stable (official)`, not `4.5.stable`. A
+strict split yielded `(0,0)` and the route then reported *"Godot 0.x is unsupported"* — which reads
+exactly like the version gate doing its job rather than a parse failure. Pinned by a test.
+
+*The rule paid for itself.* On the run where `4.4.1-debug-dotnet` hit the known `node.parent` tie
+(candidates `0x140`, `0x510`) and withheld, the getter route independently decoded **`+0x140`** — one
+of the two survivors. It published `noOpinion` rather than breaking the tie, and the agent **refused
+to wire that back into derivation**: §13.11 records a discriminator added there being wrong three
+times.
+
+**Cost: ~1.0 s per cell** (0.92–1.11 s across all 16) against a 180 s driver budget — cheaper than
+the root-location scan the calibrator already runs. It stays in every calibration.
 
 ### T5a — DONE, verified independently
 

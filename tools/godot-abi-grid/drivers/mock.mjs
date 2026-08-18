@@ -70,7 +70,105 @@ export const FAULTS = {
   // the shape a real confusion would take (§4.6/§12.7's debug/release delta), and label.text twice
   // with the same value, which is benign and must be disclosed rather than scored.
   'offset-group-collision': 'report node.name in two derivation groups with different values, and label.text in two with the same one',
+  // The corroboration section. Every one of these is a way for a SECOND derivation to look like
+  // evidence while being none, and the first is the one that actually happened: §13.2's
+  // Label::get_text row decoded the offset everything else agreed on, from a function nobody had
+  // identified, and it was a different function.
+  'corroborate-unnamed-agreement': 'report a corroborated offset with no getter name attached',
+  'corroborate-value-on-refusal': 'publish a value on a record whose verdict is noOpinion',
+  'corroborate-contradicts-derivation': 'corroborate a value 8 bytes off the offset the same result derives',
+  'corroborate-disagreement': 'report the two derivations as disagreeing, publishing neither value',
 };
+
+/**
+ * The independent getter-disassembly route, as a CORRECT driver reports it.
+ *
+ * Shaped on the live 4.5-release measurement: seven of eight probed fields corroborate by name, and
+ * `node.name` abstains because Node::get_name returns through a shape the decoder will not attribute
+ * (docs/analysis.md §16.2). The abstention is here on purpose — a mock that corroborated everything
+ * would make `notCompared`/`noOpinion` handling code nothing ever executes.
+ *
+ * Records are generated FROM the offsets this mock publishes, so a fault that changes an offset
+ * changes what the second route corroborates too. That is what a real driver does: both halves look
+ * at the same target. A fault that desynchronises them on purpose is exactly what
+ * `corroborate-contradicts-derivation` is.
+ */
+function corroborationFor(offsets, faults) {
+  const PROBES = [
+    ['canvasItem.visible', 'CanvasItem', 'is_visible', '0x139f520'],
+    ['control.size', 'Control', 'get_size', '0x14fa5b0'],
+    ['control.position', 'Control', 'get_position', '0x14fa580'],
+    ['control.scale', 'Control', 'get_scale', '0x14fa5e0'],
+    ['node.parent', 'Node', 'get_parent', '0x13d5be0'],
+    ['node.name', 'Node', 'get_name', '0x13d5d70'],
+    ['label.text', 'Label', 'get_text', '0x15d11b0'],
+    ['richTextLabel.text', 'RichTextLabel', 'get_text', '0x1663590'],
+  ];
+
+  const records = PROBES.map(([key, cls, method, rva]) => {
+    // Node::get_name abstains on every measured target, and a key this driver did not derive has
+    // nothing to be compared against — both are noOpinion, with no value.
+    const abstains = key === 'node.name' || offsets[key] === undefined;
+    return abstains
+      ? {
+        key,
+        agreement: 'noOpinion',
+        class: cls,
+        method,
+        getterRva: rva,
+        reason: `${cls}::${method} (getter at RVA ${rva}): the getter route abstained or there was no independent value`,
+      }
+      : {
+        key,
+        agreement: 'agree',
+        class: cls,
+        method,
+        getterRva: rva,
+        offset: offsets[key],
+        reason: `${cls}::${method} (getter at RVA ${rva}): two independent derivations agree on ${offsets[key]}`,
+      };
+  });
+
+  const find = (predicate) => records.find(predicate);
+
+  if (faults.has('corroborate-unnamed-agreement')) {
+    const victim = find((r) => r.agreement === 'agree');
+    if (victim) { victim.class = null; victim.method = null; }
+  }
+  if (faults.has('corroborate-value-on-refusal')) {
+    const victim = find((r) => r.agreement === 'noOpinion');
+    if (victim) victim.offset = 0x1c0;
+  }
+  if (faults.has('corroborate-contradicts-derivation')) {
+    const victim = find((r) => r.agreement === 'agree');
+    if (victim) victim.offset += 8;
+  }
+  if (faults.has('corroborate-disagreement')) {
+    const victim = find((r) => r.agreement === 'agree');
+    if (victim) {
+      victim.agreement = 'disagree';
+      delete victim.offset;
+      victim.reason = `${victim.class}::${victim.method}: getter route and bracket disagree; nothing is published`;
+    }
+  }
+
+  return {
+    method: 'classdb-getter-disassembly',
+    status: 'ran',
+    seed: {
+      class: 'Label',
+      method: 'get_text',
+      element: '0x25298098d40',
+      candidates: 17,
+      identified: 1,
+      classes: 908,
+      dataNameOffset: '0x8',
+      evidence: 'its own key reads back as "Label", the chain walks clean, and its ClassInfo holds Label::get_text',
+    },
+    records,
+    elapsedMilliseconds: 1046,
+  };
+}
 
 function fakePtr(index) {
   return `0x${(0x7ff000000000 + index * 0x1000).toString(16)}`;
@@ -410,6 +508,7 @@ export async function run(request) {
       },
     },
     nodes,
+    corroboration: corroborationFor(offsets, faults),
     managedBridge: cell.binding === 'dotnet'
       ? {
         staticRootType: expected.managedBridge.staticRootType,

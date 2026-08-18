@@ -1,4 +1,5 @@
 using Godot.External.Calibrator.Protocol;
+using Godot.External.Calibrator.Reflection;
 using LiveClr.Memory;
 
 namespace Godot.External.Calibrator.Calibration;
@@ -55,6 +56,7 @@ public sealed class CalibrationSession
     private readonly DriverRequest _request;
     private readonly IManagedProbe? _managed;
     private readonly Action? _refresh;
+    private readonly ClassDbCorroborator? _corroborator;
     private readonly GodotPrecisionWidth _precision;
     private readonly SemanticCalibrator _semantic;
     private readonly StructuralCalibrator _structural;
@@ -76,11 +78,21 @@ public sealed class CalibrationSession
     /// field from per-frame state by sampling twice — and every one of them is a no-op against a page
     /// cache that answers the repeat from the bytes it already holds.
     /// </remarks>
+    /// <param name="reader">Target memory.</param>
+    /// <param name="request">The harness's ground-truth values. Never offsets.</param>
+    /// <param name="managed">The CLR probe on a .NET cell, null on a GDScript one.</param>
+    /// <param name="refresh">Invalidates any cache between the reader and the target.</param>
+    /// <param name="corroborator">
+    /// The independent getter-disassembly route, when the caller could build one. Null means the
+    /// section is simply absent from the result — which is honest, and distinguishable from a route
+    /// that ran and found nothing.
+    /// </param>
     public CalibrationSession(
         IMemoryReader reader,
         DriverRequest request,
         IManagedProbe? managed = null,
-        Action? refresh = null)
+        Action? refresh = null,
+        ClassDbCorroborator? corroborator = null)
     {
         ArgumentNullException.ThrowIfNull(reader);
         ArgumentNullException.ThrowIfNull(request);
@@ -89,6 +101,7 @@ public sealed class CalibrationSession
         _request = request;
         _managed = managed;
         _refresh = refresh;
+        _corroborator = corroborator;
         _precision = GodotPrecisionWidth.For(request.IsDoublePrecision);
         _semantic = new SemanticCalibrator(_precision);
         _structural = new StructuralCalibrator(reader);
@@ -165,7 +178,64 @@ public sealed class CalibrationSession
         DeriveStrings(scene, layout, windows);
 
         ManagedBridgeResult? bridge = DeriveManagedBridge(rootPointer);
+
+        // LAST, and after every offset above is settled. The corroboration is a second opinion on
+        // what this run derived, so it cannot run before there is something to have an opinion about
+        // — and running it here rather than inside Build keeps a live memory scan out of what is
+        // otherwise a pure assembly step.
+        _corroboration = Corroborate();
+
         return Build(scene.Nodes.Count, BuildNodes(scene, windows), bridge);
+    }
+
+    /// <summary>
+    /// Runs the getter-disassembly route against the offsets this run bracketed.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The inputs are one-way.</b> It is handed a copy of the derived offsets and its output goes
+    /// into its own result section; nothing it returns can reach <c>_offsets</c>, a candidate list or
+    /// a node reading. A cross-check that could edit the thing it checks is not a cross-check.
+    /// </para>
+    /// <para>
+    /// A throw here must not cost the cell. Every offset, every node reading and the managed bridge
+    /// are already computed by this point, and losing all of them to a fault in a second opinion
+    /// would be the worst possible trade — so the failure is recorded as a note and the run
+    /// continues, exactly as <c>DriverResult</c>'s float handling does for the same reason.
+    /// </para>
+    /// </remarks>
+    private GetterCorroboration? Corroborate()
+    {
+        if (_corroborator is null)
+        {
+            return null;
+        }
+
+        if (_offsets.Count == 0)
+        {
+            _notes.Add("the getter-disassembly cross-check was not run: this calibration derived no offsets, so "
+                     + "there is nothing for a second route to corroborate.");
+            return null;
+        }
+
+        try
+        {
+            GetterCorroboration corroboration = _corroborator.Corroborate(new Dictionary<string, int>(_offsets));
+            _notes.Add(
+                $"getter-disassembly cross-check: {corroboration.Status}"
+                + (corroboration.Reason is { Length: > 0 } why ? $" ({why})" : string.Empty)
+                + $"; {corroboration.Records.Count(r => r.Agreement == CorroborationVerdicts.Agree)} of "
+                + $"{corroboration.Records.Count} probed field(s) corroborated by name in "
+                + $"{corroboration.ElapsedMilliseconds} ms. This is computed live against the target and is NOT "
+                + "read from any table.");
+            return corroboration;
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            _notes.Add($"the getter-disassembly cross-check threw and was abandoned ({ex.GetType().Name}: "
+                     + $"{ex.Message}); every offset above was derived before it ran and is unaffected.");
+            return null;
+        }
     }
 
     // -- (a) structural -------------------------------------------------------
@@ -341,6 +411,7 @@ public sealed class CalibrationSession
 
     private IReadOnlyList<(int Slot, int Backref)> _scriptInstanceCandidates = [];
     private string? _scriptInstanceClass;
+    private GetterCorroboration? _corroboration;
     private ulong _root;
 
     /// <summary>
@@ -1405,6 +1476,7 @@ public sealed class CalibrationSession
             },
             Nodes = nodes,
             ManagedBridge = bridge,
+            Corroboration = _corroboration,
             ProfileCrossCheck = CrossCheck(),
             Notes = _notes,
         };

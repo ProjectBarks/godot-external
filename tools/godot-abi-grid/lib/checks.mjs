@@ -125,6 +125,10 @@ export function normaliseResult(raw) {
     scriptInstanceClass: der.walk?.scriptInstanceClass ?? null,
     nodes,
     managedBridge: raw.managedBridge ?? null,
+    // The independent getter-disassembly route, computed by the driver in the same run as the
+    // bracketed answer. Deliberately NOT normalised into the derivation groups: it is a second
+    // opinion and merging it into the first would destroy the only property that makes it evidence.
+    corroboration: raw.corroboration ?? null,
     notes: raw.notes ?? [],
   };
 }
@@ -285,6 +289,7 @@ export const CHECK_CATALOG = [
   ['structure.no_collapse', 'duplicated size does not collapse nodes'],
   ['structure.walk_count', '(e) full-tree walk count'],
   ['profile.agreement', '(d) agreement with the shipped §4.6 profile'],
+  ['offsets.corroboration', '(d) a second, unrelated live derivation corroborates the bracket, BY NAME'],
   ['bridge.managed', 'managed static root -> NativePtr -> walk root, and the field values'],
 ];
 
@@ -362,6 +367,9 @@ export function runChecks({ cell, expected, profile, ready, result: rawResult })
 
   // -- (d) profile agreement -------------------------------------------------
   checks.push(checkProfileAgreement(cell, profile, result));
+
+  // -- (d) live corroboration by a second, unrelated derivation ---------------
+  checks.push(checkCorroboration(result));
 
   // -- managed bridge (dotnet cells only) -----------------------------------
   checks.push(checkManagedBridge(cell, expected, result, byPath));
@@ -1541,6 +1549,166 @@ function checkProfileAgreement(cell, profile, result) {
   return pass(id, title,
     `${compared.length} of ${entries.length} key(s) in ${profile.id} compared and matching (trust=${profile.trust})${caveat}`,
     { profileId: profile.id, trust: profile.trust, compared: compared.length, comparable: entries.length });
+}
+
+/**
+ * The live cross-check: did a SECOND, unrelated derivation agree with the bracketed one, and did it
+ * name the function it decoded?
+ *
+ * The calibrator publishes an offset when exactly one candidate survives bracketing, which is a
+ * statement about a search space. The driver's other route reads the property getter's machine code,
+ * which is a statement about the engine and never touches the heap. This check does not re-derive
+ * anything — it judges whether what the driver published about that second route is coherent, and
+ * whether it corroborates or contradicts the numbers the same run derived.
+ *
+ * Four rules, and every one of them exists because the alternative already happened once:
+ *
+ *   1. NO VERDICT BUT `agree` MAY CARRY A VALUE. §13.6/§16.4: a disagreement falsifies one of the two
+ *      derivations without saying which, so publishing either side is picking a winner by fiat. A
+ *      refusal carrying a number is the same thing with a quieter label.
+ *
+ *   2. AN `agree` MUST NAME THE GETTER IT DECODED. docs/analysis.md §13.2 recorded Label::get_text at
+ *      RVA 0x1483bb0 decoding +0x800 — a number that agreed with everything else on record and was
+ *      still wrong, because 0x1483bb0 is a DIFFERENT String getter that happened to sit at an offset
+ *      already believed. The real one is at 0x15d11b0 and decodes +0x7f8. An offset without a name
+ *      attached is not evidence, and an agreement without one is confirmation bias with extra steps.
+ *
+ *   3. A CORROBORATED VALUE MUST MATCH THE DRIVER'S OWN DERIVED OFFSET. Otherwise the section is a
+ *      self-report: a driver could publish "agree: 0x370" beside a derivation saying 0x378 and the
+ *      two halves of its own result would contradict each other with nothing to notice.
+ *
+ *   4. A `disagree` FAILS THE CELL. Two independent routes contradicting each other is the single
+ *      most informative thing this harness can observe, and it means one of them is wrong. Recording
+ *      it as a caveat on a green cell is how it would get quoted as corroboration anyway.
+ *
+ * `notCompared` and `noOpinion` are NOT failures and NOT successes — they are the correct outcome for
+ * a computed getter, for a field with no accessor, and for every field on a debug template, where
+ * unoptimized codegen spills `this` to the stack and the decoder correctly abstains (§16.2). They are
+ * listed by name in the detail so that silence cannot be read as corroboration.
+ */
+function checkCorroboration(result) {
+  const id = 'offsets.corroboration';
+  const title = '(d) an independent live derivation corroborates the bracketed offsets, by name';
+
+  const c = result.corroboration;
+  if (!c || typeof c !== 'object') {
+    return skip(id, title,
+      'this driver publishes no independent corroboration route, so there is a single derivation and '
+      + 'nothing to confront it with');
+  }
+
+  if (c.status !== 'ran') {
+    return skip(id, title,
+      `the corroboration route did not run (status "${c.status ?? 'unreported'}"): ${c.reason ?? 'no reason given'}`,
+      { status: c.status });
+  }
+
+  const records = Array.isArray(c.records) ? c.records : null;
+  if (!records || !records.length) {
+    return fail(id, title,
+      'the driver reports the corroboration route as having RUN but published no verdicts. A route that '
+      + 'ran and compared nothing is indistinguishable from one that did not run, which is the whole '
+      + 'reason `status` and `records` are separate.');
+  }
+
+  // The seed is what everything downstream is a statement ABOUT. "Pick the longest chain" selected
+  // GDScript's global_map on 4.3 and looked right on 4.5 by allocation luck, so a seed that did not
+  // resolve to EXACTLY one identified candidate makes every record below a claim about some other
+  // container (§16.1).
+  const seed = c.seed;
+  if (!seed || seed.identified !== 1) {
+    return fail(id, title,
+      `the corroboration ran against a seed that was not uniquely identified (identified=${seed?.identified ?? 'unreported'} `
+      + `of ${seed?.candidates ?? '?'} structural candidates). Every verdict below is then a statement about `
+      + 'whichever container won, not about ClassDB::classes.', { seed });
+  }
+
+  // The same merge the other two call sites use. A conflict here is already scored by
+  // offsets.internal_consistency and profile.agreement; repeating the complaint would triple-count one
+  // defect. What matters here is having ONE number per key to compare against.
+  const { merged: derived } = mergeDerivationGroups(result);
+
+  const VERDICTS = ['agree', 'disagree', 'noOpinion', 'notCompared'];
+  const agreed = [];
+  const abstained = [];
+  const problems = [];
+
+  for (const r of records) {
+    const key = typeof r?.key === 'string' ? r.key : '(unkeyed record)';
+    const verdict = r?.agreement;
+
+    if (!VERDICTS.includes(verdict)) {
+      problems.push(`${key}: agreement "${verdict}" is not one of ${VERDICTS.join('/')}`);
+      continue;
+    }
+
+    const published = parseOffset(r.offset);
+    const named = typeof r.class === 'string' && r.class.length > 0
+      && typeof r.method === 'string' && r.method.length > 0;
+
+    if (verdict !== 'agree') {
+      if (published !== null && published !== undefined) {
+        problems.push(
+          `${key}: verdict "${verdict}" but a value of ${hex(published)} was published anyway — a route that `
+          + 'did not corroborate does not get to publish a number');
+      }
+      if (verdict === 'disagree') {
+        problems.push(
+          `${key}: the two derivations DISAGREE (${r.reason ?? 'no reason given'}). One of them is wrong and `
+          + 'this cell cannot be quoted as evidence until it is resolved');
+      } else {
+        abstained.push(`${key}=${verdict}${named ? ` (${r.class}::${r.method})` : ''}`);
+      }
+      continue;
+    }
+
+    if (!named) {
+      problems.push(
+        `${key}: reported as corroborated with NO getter name attached (class=${JSON.stringify(r.class)}, `
+        + `method=${JSON.stringify(r.method)}). §13.2's Label::get_text row decoded the offset everything `
+        + 'else agreed on and was a different function; an unnamed agreement is that failure, published');
+      continue;
+    }
+
+    if (published === null || published === undefined) {
+      problems.push(`${key}: reported as corroborated by ${r.class}::${r.method} but carries no value`);
+      continue;
+    }
+
+    const own = derived[key];
+    if (own === null || own === undefined) {
+      problems.push(
+        `${key}: corroborated at ${hex(published)} by ${r.class}::${r.method}, but this same result derives no `
+        + 'value for that key — there was nothing for the second route to corroborate');
+      continue;
+    }
+
+    if (own !== published) {
+      problems.push(
+        `${key}: corroborated at ${hex(published)} by ${r.class}::${r.method}, but the same result's own `
+        + `derivation says ${hex(own)}. The two halves of one driver result contradict each other`);
+      continue;
+    }
+
+    agreed.push(`${key}=${hex(published)} (${r.class}::${r.method} @ RVA ${r.getterRva ?? '?'})`);
+  }
+
+  const summary =
+    `\n    corroborated: ${agreed.length ? agreed.join('; ') : 'none'}`
+    + `\n    not compared: ${abstained.length ? abstained.join('; ') : 'none'}`;
+
+  if (problems.length) {
+    return fail(id, title,
+      `${problems.length} problem(s) in the corroboration the driver published:\n    - ${problems.join('\n    - ')}`
+      + summary,
+      { problems: problems.length, agreed: agreed.length });
+  }
+
+  return pass(id, title,
+    `${agreed.length} of ${records.length} probed field(s) corroborated by a second live derivation, each with the `
+    + `getter it decoded named; seed "${seed.class}" identified 1 of ${seed.candidates} candidates, `
+    + `${seed.classes} classes walked${summary}`,
+    { agreed: agreed.length, probed: records.length, classes: seed.classes });
 }
 
 function checkManagedBridge(cell, expected, result, byPath) {

@@ -119,4 +119,131 @@ public sealed class OffsetCrossCheckTests
         // independent route to the same number.
         Assert.True(OffsetCrossCheck.Compare(CanvasItemIsVisibleRelease, 0x370).IsCorroborated);
     }
+
+    // ---------------------------------------------------------------- named comparison
+
+    private static GetterAttribution Named(string className = "CanvasItem", string method = "is_visible")
+        => new()
+        {
+            ClassName = className,
+            MethodName = method,
+            MethodBindAddress = 0x25297e85080,
+            CodeAddress = 0x7ff625065520,
+            CodeRva = 0x139f520,
+            Evidence = "bind names verified by value",
+        };
+
+    [Fact]
+    public void AnUnattributedDecodeCannotAgreeEvenWithTheExactRightNumber()
+    {
+        // THE test for this type. §13.2 recorded Label::get_text at RVA 0x1483bb0 decoding +0x800 —
+        // a decode that agreed with every other source on record, from a function nobody had
+        // identified, and it was a DIFFERENT String getter sitting at an offset already believed.
+        // Handing the comparison the number it "should" produce must not be enough.
+        OffsetCrossCheckResult result = OffsetCrossCheck.Compare(
+            GetterFieldDecoder.Decode(StringGetter0x800Release),
+            0x800,
+            attribution: null);
+
+        Assert.Equal(OffsetAgreement.NotCompared, result.Agreement);
+        Assert.False(result.IsCorroborated);
+        Assert.Null(result.Offset);
+    }
+
+    [Theory]
+    [InlineData("", "is_visible")]
+    [InlineData("CanvasItem", "")]
+    [InlineData("   ", "  ")]
+    public void AHalfFilledAttributionIsNotAName(string className, string method)
+    {
+        // A class with no method names a class, not a getter; a method with no class names a method on
+        // no particular type. Neither is an attribution, and neither may reach Agree.
+        OffsetCrossCheckResult result = OffsetCrossCheck.Compare(
+            GetterFieldDecoder.Decode(CanvasItemIsVisibleRelease),
+            0x370,
+            Named(className, method));
+
+        Assert.Equal(OffsetAgreement.NotCompared, result.Agreement);
+        Assert.Null(result.Offset);
+    }
+
+    [Fact]
+    public void AnAttributionWithNoCodeAddressNamesNothingThatWasDecoded()
+    {
+        GetterAttribution nowhere = Named() with { CodeAddress = 0 };
+
+        Assert.False(nowhere.IsNamed);
+        Assert.Equal(
+            OffsetAgreement.NotCompared,
+            OffsetCrossCheck.Compare(GetterFieldDecoder.Decode(CanvasItemIsVisibleRelease), 0x370, nowhere).Agreement);
+    }
+
+    [Fact]
+    public void ANamedAgreementCarriesTheNameItWasProvedAgainst()
+    {
+        OffsetCrossCheckResult result = OffsetCrossCheck.Compare(
+            GetterFieldDecoder.Decode(CanvasItemIsVisibleRelease),
+            0x370,
+            Named());
+
+        Assert.Equal(OffsetAgreement.Agree, result.Agreement);
+        Assert.Equal(0x370, result.Offset);
+
+        // The name has to travel WITH the verdict. A corroboration whose provenance lives only in the
+        // caller's head is one refactor away from being a bare number again.
+        Assert.Contains("CanvasItem::is_visible", result.Reason, StringComparison.Ordinal);
+        Assert.Contains("0x139f520", result.Reason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ANamedDisagreementStillPublishesNeitherSide()
+    {
+        // Attaching a name raises what an agreement is worth; it does not soften a disagreement.
+        OffsetCrossCheckResult result = OffsetCrossCheck.Compare(
+            GetterFieldDecoder.Decode(CanvasItemIsVisibleRelease),
+            0x378,
+            Named());
+
+        Assert.Equal(OffsetAgreement.Disagree, result.Agreement);
+        Assert.Null(result.Offset);
+        Assert.False(result.IsCorroborated);
+    }
+
+    [Fact]
+    public void NotComparedIsNotTheSameAnswerAsNoOpinion()
+    {
+        // "The decoder abstained" and "we never established which function this was" lead to different
+        // investigations, and only the first is a fact about the engine. Collapsing them would let a
+        // caller read one silence for the other — which is the reading this whole task forbids.
+        OffsetCrossCheckResult abstained = OffsetCrossCheck.Compare(
+            GetterFieldDecoder.Decode(CanvasItemIsVisibleRelease),
+            null,
+            Named());
+        OffsetCrossCheckResult unnamed = OffsetCrossCheck.Compare(
+            GetterFieldDecoder.Decode(CanvasItemIsVisibleRelease),
+            0x370,
+            attribution: null);
+
+        Assert.Equal(OffsetAgreement.NoOpinion, abstained.Agreement);
+        Assert.Equal(OffsetAgreement.NotCompared, unnamed.Agreement);
+        Assert.NotEqual(abstained.Agreement, unnamed.Agreement);
+        Assert.Null(abstained.Offset);
+        Assert.Null(unnamed.Offset);
+    }
+
+    [Fact]
+    public void ARefusedDecodeWithAGoodNameIsStillNoCorroboration()
+    {
+        // The name is necessary, not sufficient. Every field on a debug template lands here: the
+        // bind resolves by name, and the decoder correctly refuses the spilled-`this` body (§16.2).
+        byte[] computed = [0x48, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, 0xC3];
+
+        OffsetCrossCheckResult result = OffsetCrossCheck.Compare(
+            GetterFieldDecoder.Decode(computed),
+            0x370,
+            Named());
+
+        Assert.NotEqual(OffsetAgreement.Agree, result.Agreement);
+        Assert.Null(result.Offset);
+    }
 }

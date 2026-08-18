@@ -223,12 +223,42 @@ independently-known values, intersected". Offsets are never sent, and a driver t
     "nativePtr": "0x…",
     "reverse": { "ownerBackref": "0x…", "gcHandle": "0x…" },
     "fields": { "ProbeInt32": 613227, "ProbeUnicode": "héllo ✦ 日本語" }
+  },
+  // OPTIONAL. A SECOND, unrelated derivation of the same offsets, computed by the driver in the
+  // same run — scored by `offsets.corroboration`. Omit it and that check skips.
+  "corroboration": {
+    "method": "classdb-getter-disassembly", "status": "ran",
+    "seed": { "class": "Label", "method": "get_text", "element": "0x…",
+              "candidates": 17, "identified": 1, "classes": 908,
+              "dataNameOffset": "0x8", "evidence": "…" },
+    "records": [
+      { "key": "canvasItem.visible", "agreement": "agree",
+        "class": "CanvasItem", "method": "is_visible",
+        "getterRva": "0x139f520", "methodBind": "0x…",
+        "offset": "0x370", "reason": "…" },
+      { "key": "node.name", "agreement": "noOpinion",
+        "class": "Node", "method": "get_name", "getterRva": "0x13d5d70", "reason": "…" }
+    ],
+    "elapsedMilliseconds": 1046
   }
 }
 ```
 
 Notes:
 
+- `corroboration.records[].agreement` is one of `agree`, `disagree`, `noOpinion`, `notCompared`, and
+  **only `agree` may carry an `offset`**. A disagreement falsifies one of the two derivations without
+  saying which, so publishing either side is picking a winner by fiat; a refusal carrying a number is
+  the same thing with a quieter label.
+- An `agree` **must** name the getter it decoded (`class` + `method`). docs/analysis.md §13.2 recorded
+  `Label::get_text` at RVA `0x1483bb0` decoding `+0x800` — a number that agreed with everything else
+  on record, from a function nobody had identified, and it was a different function. An offset
+  without a name attached is not evidence.
+- `notCompared` (no named getter for this field) and `noOpinion` (the decoder or the other route
+  abstained) are deliberately distinct. Neither is a failure; neither is corroboration.
+- A corroborated value must equal what the same result publishes under `derivation` for that key. The
+  section is a second opinion, so nothing in it may feed a candidate list, a sample count or a
+  published offset — and a driver whose two halves disagree with each other fails the check.
 - Offsets may be hex strings or integers. Pointers **must** be strings — a 64-bit pointer through a
   JS Number is a silent corruption, and the harness rejects unsafe integers rather than guessing.
 - Vectors may be arrays, `{x,y}`, or array-likes `{0:…,1:…}` (§12.6).
@@ -257,6 +287,7 @@ Notes:
 | `structure.no_collapse` | — | the duplicated size must not merge two nodes |
 | `structure.walk_count` | (e) | driver count, node records and the target's own count must agree |
 | `profile.agreement` | (d) | loud failure on disagreement, never a fallback |
+| `offsets.corroboration` | (d) | a SECOND live derivation, by name: only `agree` may carry a value, an `agree` must name the getter it decoded, and it must match the driver's own derived offset |
 | `bridge.managed` | — | `.NET` cells: managed static → `NativePtr` → the native walk root |
 
 ### The two-instance rule

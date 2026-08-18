@@ -300,6 +300,45 @@ const SCENARIOS = [
     detailMatch: { 'structural.parent': /the node whose child list holds it/ },
   },
 
+  // -- T5b: the live corroboration route ---------------------------------------------------------
+  // The whole section exists so a derived offset can be confirmed by a SECOND, unrelated route
+  // computed in the same run. Each of these is a way for that section to read as corroboration
+  // while being none.
+  {
+    // THE headline for this round, and the one that actually happened. docs/analysis.md §13.2
+    // recorded Label::get_text at RVA 0x1483bb0 decoding +0x800 — agreeing with everything else on
+    // record, and wrong, because that is a DIFFERENT String getter sitting at an offset already
+    // believed. An agreement with no name attached is that failure in published form.
+    name: 'an offset reported as corroborated with no getter name attached',
+    faults: ['corroborate-unnamed-agreement'],
+    mustFail: ['offsets.corroboration'],
+    detailMatch: { 'offsets.corroboration': /NO getter name attached/ },
+    // The derivation itself is untouched: this fault is about what the second route claims, not
+    // about what the first one derived.
+    mustPass: ['offsets.internal_consistency', 'profile.agreement', 'semantic.size'],
+  },
+  {
+    name: 'a value published on a record whose two routes did not corroborate',
+    faults: ['corroborate-value-on-refusal'],
+    mustFail: ['offsets.corroboration'],
+    detailMatch: { 'offsets.corroboration': /does not get to publish a number/ },
+  },
+  {
+    name: 'a corroborated value that contradicts the same result\'s own derived offset',
+    faults: ['corroborate-contradicts-derivation'],
+    mustFail: ['offsets.corroboration'],
+    detailMatch: { 'offsets.corroboration': /two halves of one driver result contradict each other/ },
+    // Nothing else can see it: profile.agreement scores the DERIVATION, which is still correct.
+    mustPass: ['profile.agreement', 'offsets.internal_consistency'],
+  },
+  {
+    name: 'the two independent derivations disagree, and neither value is published',
+    faults: ['corroborate-disagreement'],
+    mustFail: ['offsets.corroboration'],
+    detailMatch: { 'offsets.corroboration': /DISAGREE/ },
+    mustPass: ['profile.agreement'],
+  },
+
   // -- lib/rawtree.mjs, which had no coverage at all -------------------------------------------
   {
     name: 'ready.v2 raw tree with an engine-internal scrollbar — baseline',

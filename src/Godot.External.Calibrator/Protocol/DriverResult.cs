@@ -235,6 +235,27 @@ public sealed record DriverResult
     public ManagedBridgeResult? ManagedBridge { get; init; }
 
     /// <summary>
+    /// A second, unrelated derivation of the same offsets, computed live in this run — see
+    /// <see cref="GetterCorroboration"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Beside <see cref="Derivation"/>, never instead of it.</b> Nothing here feeds a candidate
+    /// list, a sample count or a published offset; the derivation a reader sees is exactly the one it
+    /// saw before this field existed. That separation is the entire value of the section — a second
+    /// opinion that had been allowed to edit the first would be worth nothing.
+    /// </para>
+    /// <para>
+    /// Unlike <see cref="ProfileCrossCheck"/>, this <em>is</em> part of the harness schema and is
+    /// scored: <c>offsets.corroboration</c> in <c>lib/checks.mjs</c> asserts that no verdict but
+    /// <c>agree</c> carries a value, that every <c>agree</c> carries the class and method it was
+    /// proved against, and that the corroborated value matches this same result's derived offset.
+    /// It cannot look like an input, because a shipped table is exactly what it must not be.
+    /// </para>
+    /// </remarks>
+    public GetterCorroboration? Corroboration { get; init; }
+
+    /// <summary>
     /// Agreement or divergence against the shipped table, computed after every offset was derived.
     /// Unknown to the harness schema on purpose — it must never look like an input.
     /// </summary>

@@ -21,4 +21,26 @@ public enum OffsetAgreement
     /// disagreement falsifies one of them without saying which.
     /// </summary>
     Disagree = 2,
+
+    /// <summary>
+    /// No comparison was attempted, because the getter route could not say <em>whose</em> field it
+    /// was looking at.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Distinct from <see cref="NoOpinion"/> on purpose, and the distinction is the one docs/analysis.md
+    /// §13.2 paid for. That table recorded <c>Label::get_text</c> at RVA <c>0x1483bb0</c> decoding
+    /// <c>+0x800</c>; a live <c>ClassDB</c> walk later resolved the real <c>Label::get_text</c> to RVA
+    /// <c>0x15d11b0</c>, decoding <c>+0x7f8</c>. The original row was a <em>different</em>
+    /// <c>String</c> getter that happened to sit at an offset already believed — a decode that agreed
+    /// with the answer, from a function nobody had identified.
+    /// </para>
+    /// <para>
+    /// <b>An offset without a name attached is not evidence.</b> So a decode with no attribution does
+    /// not get to reach <see cref="Agree"/>, and it is not folded into <see cref="NoOpinion"/> either:
+    /// "the decoder abstained" and "we never established which function this was" lead to different
+    /// investigations, and only one of them is a property of the engine.
+    /// </para>
+    /// </remarks>
+    NotCompared = 3,
 }
