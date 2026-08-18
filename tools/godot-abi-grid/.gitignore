@@ -14,3 +14,6 @@ project/obj/
 project/*.sln
 project/*.csproj.user
 project/export_presets.cfg.bak
+
+# scratch output from a run with an unset --results path
+undefined/
