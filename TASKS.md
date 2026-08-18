@@ -17,33 +17,258 @@ Tracks both `godot-external` and `LiveClr`. Updated as tasks land.
 | | |
 | --- | --- |
 | `godot-external` | `feature/calibrator-rtti-class-identity`, pushed |
-| `LiveClr` | `docs/analysis-sync`, pushed, 332 tests |
-| Grid | 22 checks + 2 cross-cell. Runs 1–2 byte-identical. `bridge.managed` fails 12/12 (real gap) |
+| `LiveClr` | `docs/analysis-sync`, pushed, **365 tests**, statics implemented and verified live |
+| Grid | 22 checks + 2 cross-cell, **12 cells** across 4.3 / 4.4.1 / 4.5. `bridge.managed` now 30/30 |
 | Absent-never-wrong | Holds — 648 records, 94/94 byte-exact, 0 invented |
 
 ### Task board
 
 | | Task | State |
 | --- | --- | --- |
-| T1 | Statics in LiveClr | IN PROGRESS |
-| T2 | `bridge.managed` reads six values | IN PROGRESS |
-| T3 | Withhold paths declare themselves | IN PROGRESS |
-| T4 | Godot 4.4 support | **BLOCKED — no 4.4 editor or templates installed** |
-| T5a | Reflection defects + `HashMap` contradiction | IN PROGRESS |
+| **T1** | **Statics in LiveClr** | **DONE** |
+| **T2** | **`bridge.managed` reads six values** | **DONE** |
+| **T3** | **Withhold paths declare themselves** | **DONE** |
+| **T4** | **Godot 4.4 support** | **DONE** |
+| **T8** | **LiveClr `IsString` dead on live targets** *(new, found by T2)* | **DONE** |
+| T9 | LiveClr `IsList` — same defect, proved not fixed *(new, found by T8)* | OPEN |
+| **T5a** | **Reflection defects + `HashMap` contradiction** | **DONE** |
 | T5b | Wire ClassDB cross-check | WAITING on T2/T3 (shares the calibrator) |
-| T6 | Godot 4.6 support | **BLOCKED — no 4.6 editor or templates installed** |
-| T7 | Derivation-group merge collision | IN PROGRESS |
+| T6 | Godot 4.6 support | IN PROGRESS |
+| **T7** | **Derivation-group merge collision** | **DONE** |
 
-**T4 / T6 blocker, stated precisely.** `%APPDATA%\Godot\export_templates` holds only `4.3.stable`,
-`4.3.stable.mono`, `4.5.stable`, `4.5.stable.mono`. No Godot editor is installed on disk for 4.4 or
-4.6 either. Both tasks need the matching **editor** plus its **export templates**, and Godot ships
-templates only as a single `.tpz` bundle per version (~1 GB each, so ~2 GB total for 4.4.1 + 4.6.x,
-plus the two editors).
+### T1 — DONE, verified independently
 
-This is a **resource** blocker, not a decision — the work itself is specified and cheap once the
-templates exist (T4 is a version-gate entry onto the 4.3-family parsers plus a calibration run).
-It is listed here rather than under BLOCKED-ON-YOU because nothing about it needs a design choice,
-only the download.
+Verifier run by the orchestrator: reverting the back-pointer anchor (`StaticsCalibration.cs:159`)
+fails **exactly** `RefusesATypeWhoseBackPointerAnchorDoesNotClose`; restored, **359/359 pass**.
+
+| | before | after |
+| --- | --- | --- |
+| LiveClr tests | 332 | **359** |
+| Static field addresses | not implemented (delegated to ClrMD) | **implemented, derived, verified live** |
+
+Live against PID 418440: `Environment.s_processId` → **418440**, the target's real PID. Control —
+821 reads through the wrong base → **0** accidentally-valid objects. Anchor **3033/3033** gate-set,
+**0/9250** gate-clear. All 14 hostile inputs refused while the real `System.String` MT is still
+accepted. Of 28,003 statics, 23,985 resolved with **0 garbage** across 18,542 GC reads.
+
+**Nothing on the path is hardcoded.** The auxiliary slot and the `MTFlags2` gate bit are derived
+*jointly* — the one (slot, bit) pair where "the anchor closes" and "the bit is set" agree on every
+sampled type. Neither is derivable alone: a slot sweep without a gate finds the anchor on an
+unexplained subset, and a bit search without a slot has nothing to correlate against. Which
+`DynamicStaticsInfo` member is the GC base is **measured**, not read off the struct — both orderings
+are scored and the winner must have zero garbage while the loser resolves zero objects, so the
+control this task demanded is computed at attach.
+
+Found and fixed in passing: **boxed value-type statics.** `DateTime.MinValue` reported ticks of
+`1798517794032` — a heap address. The slot holds a reference; it is now followed after validation.
+
+**§14 Correction 3 was over-attributed** and is fixed in the doc: only **83 of 3,747** storage-less
+statics are generic. The rest are ordinary types whose class initialiser never ran — a transient
+state that resolves the moment the target touches the class, not a permanent capability limit. They
+now have their own status.
+
+Honest gap the agent flagged: the two thread-static guards **shadow each other** — removing either
+alone leaves the test green, removing both turns it red. By design (metadata is the authority, the
+derived bit a second opinion), but neither is individually falsifiable.
+
+### T2 / T3 — DONE, verified on the live grid
+
+| | before | after |
+| --- | --- | --- |
+| `bridge.managed` | **0/12** .NET cell-runs (fields `{}` in all 224 historical results) | **30/30** across 5 grid runs |
+| Reference cell | 21/22 | **22/22** |
+| `profile.agreement` undeclared-withhold failures | 2 | **0** across 5 runs |
+| Calibrator tests | 338 | **349** |
+
+**T2's root cause was two defects.** `ClrManagedProbe.TryDescribe` only ever called `AsString()`, so
+the four numeric/bool fields were never attempted — fixing that got 4 of 6. The remaining two
+exposed a **LiveClr production defect**, now tracked as T8.
+
+**T3's task named two undeclared withhold paths; there were seven.** All now route through
+`Decline()`, which is **first-wins** — a later, vaguer observation must not overwrite the operative
+cause, which is exactly the "declares a reason that is not the real one" failure the task warned
+about. `Build` withdraws a declaration for any key a later pass settles.
+
+**10 reversions**, each reddening its own test alone, including two driven through the live grid.
+
+The agent **refused to add a tie-breaker**, correctly: §13.11 records that a discriminator added here
+has been wrong three times. It noted the `canvasItem.visible` obstacle names its own remedy —
+*"another sample with a different expected value is needed"* — which is a question about the
+**harness's anchor set**, not a calibrator discriminator. That is the only proposal worth pursuing.
+
+**Another vacuous test found:** the pre-existing `AnEvenSplitOnOneNodeAlsoWithholds` passes *without
+reaching the branch it names* — with one `RichTextLabel` in the scene, `OfClass` refuses before
+candidates are ever weighed. And the agent's own first `Build`-reconciliation test passed with the
+fix reverted, which is what led it to the `node.scriptInstance` deferral gap.
+
+### T4 — DONE, verified
+
+**The code change §15.6 predicted does not exist to be written.** The calibrator carries no
+version-keyed offset table, and `build.ps1`/`lib/grid.mjs` already knew about 4.4. The calibration
+run *was* the task. **4.4 works because nothing aliases.**
+
+| | before | after |
+| --- | --- | --- |
+| built cells | 8 | **12** |
+| versions measured | 4.3, 4.5 | **4.3, 4.4.1, 4.5** |
+| cross-cell groups | 4 | **6** |
+
+**§15.1's shift figure was refuted: the inherited band moves `+0x10`, not `+8`.** A second 8 enters
+above `Node::data.parent`, consistent with §15.1's own aside about `Node::Data` gaining bitfields —
+an observation that never reached its number. **Patching 4.3's table with "+8" would have produced a
+table wrong on every `Node` field and plausible enough to ship.** Only the wrong half was actionable:
+a derived calibrator is unharmed, a hand-patched table is silently broken. Full table in §15.7.
+
+Confirmed to the byte: `visible` moves with the `Node` band, and the `Control` block moves **exactly
+96** beyond the inherited shift. No 4.4.1 column was written into `profiles.json` — that would be the
+pass-by-construction §13.11 forbids.
+
+### T8 — DONE, verified independently
+
+Verifier run by the orchestrator: reverting the fixture's string norm type to the old
+`ELEMENT_TYPE_STRING` fails **exactly** `TheFixtureWritesTheNormTypeARealRuntimeWrites`; restored,
+**365/365 pass** (was 359).
+
+`AsString()` returned null for **every string on every real target**. Across 12,283 live
+MethodTables, `EEClass.InternalCorElementType == ELEMENT_TYPE_STRING` appears **zero times** —
+`System.String` reports `ELEMENT_TYPE_CLASS`.
+
+**The category-mask theory I supplied was also wrong.** String's category bits are `0x00000000`,
+identical to an ordinary class, because CoreCLR's own `MethodTable::IsString` is a **shape** test,
+not a category test. No measured constant would have worked. (The `0x000F0000` field *does* carry
+identity for other kinds — valuetype, primitive, interface, szarray — confirmed over ~1,400 types.)
+
+The fix is **descriptor-published**: the `StringMethodTable` global, validated to round-trip as a
+method table, compared by pointer. Where a runtime omits that global, the fallback demands **two
+independent signals** — the ECMA-335 name *and* a component stride of 2 — each selecting exactly 1
+of 12,283 live MTs, and the same one.
+
+Live ground truth: `ReleaseInfoManager._instance` now reads `Commit "59260271"`,
+`Version "v0.107.1"` — matching `release_info.json` on disk. Before the fix: three nulls. Controls
+hold — `Environment.s_processId` is *not* decoded as a string, `String.Empty` reads `""` not null.
+
+**Fixture honesty limit, recorded rather than papered over:** it now writes what .NET 9 writes for
+String's norm type and `MTFlags`, but still does not synthesize the `MTFlags` **category** bits
+(live `ObjectArray` is `0x810A0008`, fixture writes `0x80000008`). Nothing reads them today; a future
+category-based predicate must measure before trusting the fixture there.
+
+### T9 — OPEN. `IsList` has the same defect, proved and deliberately not fixed
+
+`IsList` is a name-prefix match, and names come from inverting `TypeDefToMethodTableMap`, which holds
+**typical instantiations only**. Live: 75 of 555 walked objects have no name at all, and **9 of 9
+slots whose ECMA-335 signature declares `List<T>` returned null from `AsList()`**
+(`Sentry.SentryOptions.ExceptionProcessors` among them).
+
+The canonical MT (`List<__Canon>`) is not in the map either, and shares **no EEClass** with the
+typical instantiation (0 of 75 matched) — so there is no cheap descriptor route back to the
+definition. The agent declined to invent one, which is right. The fixture hid it the same way
+`IsString` was hidden: `DefineInstantiatedType` pointed at the *mapped* typical MT, a shape no
+runtime produces. It can now produce the live shape, and
+`GenericInstantiationsAreNotNamedOnALiveShapedTarget` pins the refusal as a **documented limitation
+with a falsifiable test**.
+
+`AsObject`, `AsArray` and `IsArray` were checked on the same run and are **not** affected — arrays do
+report `SZARRAY` live, 555 objects typed cleanly, and `System.String[]` elements decode.
+
+### T5a — DONE, verified independently
+
+Verifier run by the orchestrator: reverting `DefaultProbeSlots` 12 → 8 fails **exactly the four
+named tests** (`TheProbeFindsTheMethodPointer…(slot: 9)` and `(slot: 11)`,
+`TheDefaultWindowReachesTheDebugMethodBind…`, `TwoCodePointersInTheProbeWindowRefuse`); restoring it
+returns 22/22.
+
+| | before | after |
+| --- | --- | --- |
+| `MethodBindProbe` live resolution | **0/16 probes** — all refused | **16/16**, one `.text` hit each, never two |
+| Release cells | — | slot 9, `sizeof(MethodBind) = 0x48` |
+| Debug cells | — | slot 11, `sizeof(MethodBind) = 0x58` |
+
+Decoded offsets match the known-correct answers, and the RVAs match §13.2's *corrected* table:
+4.5-release `Label::get_text` +0x7f8 (RVA `0x15d11b0`), `is_visible` +0x370 (RVA `0x139f520`);
+4.3-release +0x8f0 and +0x418; 4.5-debug `get_text` +0x800, with debug `is_visible` abstaining per
+§16.2's structural limit.
+
+**The `HashMap` contradiction: §15.3 (source) was right, §16.5 (measurement) was wrong — and the
+code needed no value change.** `HashMapSize = 48` was **correct as shipped; it was never a defect.**
+§16.5's basis was *"`num_elements` at head+0x14, head at map+16"* — the first half is
+version-invariant, the second assumed the 4.5 layout onto 4.3, so `0x10 + 0x14 + 4 = 40` falls out
+**by construction on any version**. Arithmetic, not measurement: another §13.11 result that could not
+come out otherwise.
+
+Measured live by walking every registered `ClassInfo` and accepting a head only where
+`head_element`, `tail_element` and `num_elements` all agree with a fully traversed chain — it
+reproduces `ClassInfo` member-for-member, not just an average stride:
+
+| | 4.3 (869 classes) | 4.5 (908 classes) |
+| --- | --- | --- |
+| `head_element` within `HashMap` | **+0x18** | **+0x10** |
+| `sizeof(HashMap)` | **48** | **40** |
+
+The real defect was **naming**: §16.5's "`method_map` at +0x30 / +0x38" are that map's
+`head_element` offsets; `method_map` itself is at `ClassInfo+0x20` on **both**. Fixed by adding
+`ClassDbLayout.HashMapHeadElement` beside `HashMapSize`, with a test asserting they are not the same
+number.
+
+**The `cname` item — the brief's premise was half wrong too.** Which of `cname`/`name` is populated
+is decided by the **interning route**, not the version (`StaticCString` sets `cname`; the
+`String`/`const char*` ctors set `name`). Measured on 4.3, it cuts both ways *inside one walk*:
+class-name keys populate `name`, method-name keys populate `cname`. So a `name`-only 4.3 reader
+reads every class name correctly and every method name as `""`, resolving no bind at all. §13.7's
+rule is right; §16.5's "backwards" was right only about the keys it happened to look at.
+
+**Another check that could not fail, found in passing:** the old probe test placed the method pointer
+at slot 4 or 5 — inside the broken 8-slot window and nowhere near either real layout — so it passed
+green while the shipped default refused 100% of live probes. It now uses the measured slots and calls
+with the *shipped default*, which is what arms the reversion above.
+
+**Unreconciled, recorded rather than overwritten:** §16.1 says 870 classes on 4.3; T5a measures
+**869** on all four 4.3 cells, from a chain that round-trips cleanly end to end (a truncated walk
+would have failed, not come up one short). 4.5's 908 reproduces exactly. One of the two is a
+transcription slip and there is no evidence saying which.
+
+### T7 — DONE, verified independently
+
+Verifier run by the orchestrator, not accepted from the subagent: `npm test` exit 0,
+**56/56 selftest scenarios**, **23/23 fixes go red when reverted** including
+`offset-group-collision #13`.
+
+| | before | after |
+| --- | --- | --- |
+| selftest scenarios | 55 | **56** |
+| armed fixes (`mutate-verify`) | 22 | **23** |
+
+The audit reported the hole in `checkOffsetConsistency`. The worse instance was in
+**`checkProfileAgreement`**: the coin-flip survivor of the merge was compared against the shipped
+profile, so a self-contradicting driver had a **50/50 chance of a green "matches"** that would then
+be quoted as corroboration. Both call sites plus `calibrate.mjs`'s `derived.offsets` record now go
+through `mergeDerivationGroups`, which separates **conflicts** (different values — scored as a
+failure) from **duplicates** (same value — disclosed, not scored).
+
+`crosscell.mjs`'s fourth spread-merge was examined and found **not** to have the hole — walk links
+are re-keyed under a `walk:` prefix no offset key can carry, and its input arrives already
+collision-checked. Documented rather than given an unarmed check.
+
+The mutation reverts **both** call sites at once; reverting one alone leaves the other reddening the
+scenario and proves nothing. Confirmed by hand: with the fix reverted exactly one scenario goes red,
+and pre-fix the fault is entirely invisible because the `strings` copy wins the spread and the
+surviving value happens to be correct.
+
+### Toolchain — T4/T6 unblocked
+
+**4.4.1-stable** and **4.6.3-stable** installed, standard + mono, editors under
+`tools/godot-abi-grid/bin/` (gitignored) and templates in `%APPDATA%\Godot\export_templates\`.
+All 8 downloads verified against the official per-release `SHA512-SUMS.txt` (8/8), all 4 editors
+confirmed running headlessly. Actual download was **~4.9 GB**, not the ~2 GB estimated — templates
+are ~1.2 GB *each*.
+
+Tag enumeration confirmed exactly two 4.4.x tags and four 4.6.x, so the newest of each was taken.
+`build.ps1 -ListOnly` now reports **16 buildable cells, 0 errors** — the eight new ones are
+`4.4.1-*` and `4.6.3-*`, since cell names use the **resolved** version, not `4.4-*`/`4.6-*`.
+`VersionMatrix` already carried entries for both, so no source change was needed.
+
+Still unbuildable, unchanged and out of scope: **4.2** (no editor or templates) and **every
+`precision=double` cell at every version** — Godot publishes single-precision templates only, so
+those need an engine built from source.
 
 ---
 
